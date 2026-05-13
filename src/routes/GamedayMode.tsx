@@ -142,7 +142,7 @@ export default function GamedayMode() {
       <header className="mb-6">
         <Button variant="ghost" size="sm" onClick={() => navigate(`/teams/${teamId}/lineup/${gameId}`)} className="mb-2 -ml-2">
           <ArrowLeft className="mr-1 h-4 w-4" />
-          Lineup
+          Gameplan
         </Button>
         <h1 className="text-2xl font-bold text-slate-900">{game.name}</h1>
         <p className="mt-1 text-sm text-slate-500">{team.name} &middot; Gameday Mode</p>
