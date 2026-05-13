@@ -393,7 +393,15 @@ export async function updateActiveRoster(
     if (!existingPlaytime.has(pid)) existingPlaytime.set(pid, 0)
   }
 
-  // Recalculate from current segment onward
+  // Find current shift index within its segment
+  const currentSegShifts = currentShift
+    ? allShifts
+        .filter(s => s.segmentId === currentShift.segmentId)
+        .sort((a, b) => a.startMinute - b.startMinute)
+    : []
+  const currentShiftIndex = currentSegShifts.findIndex(s => s.id === currentShift?.id)
+
+  // Recalculate from current segment onward, skipping the current shift
   for (let si = currentSegIdx; si < segments.length; si++) {
     const segShifts = allShifts
       .filter(s => s.segmentId === segments[si].id)
@@ -401,7 +409,14 @@ export async function updateActiveRoster(
 
     if (segShifts.length === 0) continue
 
-    const totalDuration = segShifts.reduce((sum, s) => sum + (s.endMinute - s.startMinute), 0)
+    const isFirstSegment = si === currentSegIdx
+    const shiftsToReplace = isFirstSegment
+      ? segShifts.slice(currentShiftIndex + 1)
+      : segShifts
+
+    if (shiftsToReplace.length === 0) continue
+
+    const totalDuration = shiftsToReplace.reduce((sum, s) => sum + (s.endMinute - s.startMinute), 0)
 
     const lineupResults = generateLineups(
       newActivePlayerIds,
@@ -419,10 +434,9 @@ export async function updateActiveRoster(
       }
     }
 
-    for (let i = 0; i < segShifts.length && i < (lineupResults[0]?.shifts.length ?? 0); i++) {
-      const shiftRes = lineupResults[0].shifts[i]
-      await db.shifts.update(segShifts[i].id, {
-        lineupJson: JSON.stringify(shiftRes.lineup),
+    for (let i = 0; i < shiftsToReplace.length && i < (lineupResults[0]?.shifts.length ?? 0); i++) {
+      await db.shifts.update(shiftsToReplace[i].id, {
+        lineupJson: JSON.stringify(lineupResults[0].shifts[i].lineup),
       })
     }
   }
