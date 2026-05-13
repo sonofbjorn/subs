@@ -5,6 +5,7 @@ import { ArrowLeft, Shuffle, Play, Pencil } from 'lucide-react'
 import type { Player, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { startGame, recalculateLineups } from '../db/repositories/games'
+import PlaytimeSummary from '../components/PlaytimeSummary'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 
@@ -55,12 +56,26 @@ export default function LineupDisplay() {
     : []
 
   const playtime = new Map<string, number>()
+  const shiftsPerPlayer = new Map<string, number>()
   for (const shift of shifts) {
     const lineup: string[] = JSON.parse(shift.lineupJson)
     const duration = shift.endMinute - shift.startMinute
     for (const pid of lineup) {
       playtime.set(pid, (playtime.get(pid) ?? 0) + duration)
+      shiftsPerPlayer.set(pid, (shiftsPerPlayer.get(pid) ?? 0) + 1)
     }
+  }
+
+  const shiftsPerPlayerByName = new Map<string, number>()
+  for (const pid of game.activePlayerIds) {
+    const name = playerMap.get(pid) ?? 'Unknown'
+    shiftsPerPlayerByName.set(name, shiftsPerPlayer.get(pid) ?? 0)
+  }
+
+  const playtimeByName = new Map<string, number>()
+  for (const [pid, minutes] of playtime) {
+    const name = playerMap.get(pid) ?? 'Unknown'
+    playtimeByName.set(name, minutes)
   }
 
   const totalMinutes = segments.length * game.durationMinutes
@@ -156,30 +171,40 @@ export default function LineupDisplay() {
         </div>
       )}
 
-      <Card className="mt-6">
-        <h3 className="mb-3 text-sm font-semibold text-slate-700">Playing Time</h3>
-        <div className="space-y-2">
-          {activePlayerNames.map(name => {
-            const pid = allPlayers.find(p => p.name === name)?.id
-            const minutes = pid ? playtime.get(pid) ?? 0 : 0
-            const pct = totalMinutes > 0 ? Math.round((minutes / totalMinutes) * 100) : 0
-            return (
-              <div key={name} className="flex items-center gap-3">
-                <span className="w-32 text-sm text-slate-700 truncate">{name}</span>
-                <div className="flex-1">
-                  <div className="h-2 rounded-full bg-slate-100">
-                    <div
-                      className="h-2 rounded-full bg-orange-500 transition-all"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                </div>
-                <span className="w-16 text-right text-xs text-slate-500">{minutes} min</span>
-              </div>
-            )
-          })}
+      {game.status === 'COMPLETED' ? (
+        <div className="mt-6">
+          <PlaytimeSummary
+            playerNames={activePlayerNames}
+            playtime={playtimeByName}
+            totalMinutes={totalMinutes}
+            shiftsPerPlayer={shiftsPerPlayerByName}
+          />
         </div>
-      </Card>
+      ) : (
+        <Card className="mt-6">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">Playing Time</h3>
+          <div className="space-y-2">
+            {activePlayerNames.map(name => {
+              const minutes = playtimeByName.get(name) ?? 0
+              const pct = totalMinutes > 0 ? Math.round((minutes / totalMinutes) * 100) : 0
+              return (
+                <div key={name} className="flex items-center gap-3">
+                  <span className="w-32 text-sm text-slate-700 truncate">{name}</span>
+                  <div className="flex-1">
+                    <div className="h-2 rounded-full bg-slate-100">
+                      <div
+                        className="h-2 rounded-full bg-orange-500 transition-all"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                  <span className="w-16 text-right text-xs text-slate-500">{minutes} min</span>
+                </div>
+              )
+            })}
+          </div>
+        </Card>
+      )}
 
       <div className="mt-8 flex flex-col gap-3">
         {game.status === 'DRAFT' && (
