@@ -4,6 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { Plus, Trash2 } from 'lucide-react'
 import { db } from '../db/schema'
 import { createTeam, renameTeam, deleteTeam } from '../db/repositories/teams'
+import BasketballIcon from '../components/BasketballIcon'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 import Dialog from '../components/ui/dialog'
@@ -56,11 +57,7 @@ export default function TeamList() {
     <div className="mx-auto max-w-2xl px-4 py-8">
       <header className="mb-8 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <svg className="h-8 w-8 text-orange-500" viewBox="0 0 24 24" fill="none" strokeWidth={1.5} stroke="currentColor">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M5 5a10 10 0 0 0 14 14M5 19a10 10 0 0 0 14-14" />
-            <path d="M12 3v18M3 12h18" />
-          </svg>
+          <BasketballIcon className="h-8 w-8 text-orange-500" />
           <h1 className="text-2xl font-bold text-slate-900">Teams</h1>
         </div>
         {teams.length > 0 && (
@@ -73,11 +70,7 @@ export default function TeamList() {
 
       {teams.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 py-20">
-          <svg className="mb-4 h-12 w-12 text-slate-300" viewBox="0 0 24 24" fill="none" strokeWidth={1.5} stroke="currentColor">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M5 5a10 10 0 0 0 14 14M5 19a10 10 0 0 0 14-14" />
-            <path d="M12 3v18M3 12h18" />
-          </svg>
+          <BasketballIcon className="mb-4 h-12 w-12 text-slate-300" />
           <h2 className="mb-2 text-lg font-semibold text-slate-700">No teams yet</h2>
           <p className="mb-6 text-sm text-slate-500">Create your first team to get started</p>
           <Button size="lg" onClick={() => setShowCreate(true)}>
