@@ -74,7 +74,7 @@ function runGeneration(
           ? 1.0
           : 1 + s.consecutiveRested * 0.3
         const overLimit = s.lastShiftPlayed ? Math.max(0, s.consecutivePlayed - maxConsecutiveShifts) : 0
-        const consecutivePenalty = overLimit > 0 ? 1 / (1 + overLimit) : 1.0
+        const consecutivePenalty = overLimit > 0 ? 1 / Math.pow(10, overLimit) : 1.0
         return { playerId: id, weight: baseWeight * restMultiplier * consecutivePenalty }
       })
 
