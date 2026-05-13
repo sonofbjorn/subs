@@ -6,9 +6,12 @@ import ActivePlayerSelect from './routes/ActivePlayerSelect'
 import LineupDisplay from './routes/LineupDisplay'
 import GamedayMode from './routes/GamedayMode'
 
+const base = import.meta.env.BASE_URL
+const basename = base === '/' ? '/' : base.replace(/\/$/, '')
+
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <Routes>
         <Route path="/" element={<TeamList />} />
         <Route path="/teams/:teamId" element={<RosterList />} />
