@@ -20,6 +20,7 @@ export interface Game {
   teamId: string
   name: string
   activePlayerIds: string[]
+  injuredPlayerIds: string[]
   structure: GameStructure
   durationMinutes: number
   substitutionIntervalMinutes: number

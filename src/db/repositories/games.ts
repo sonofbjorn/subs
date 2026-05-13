@@ -20,6 +20,7 @@ export async function createGame(input: CreateGameInput): Promise<string> {
     teamId: input.teamId,
     name: input.name,
     activePlayerIds: input.activePlayerIds,
+    injuredPlayerIds: [],
     structure: input.structure,
     durationMinutes: input.durationMinutes,
     substitutionIntervalMinutes: input.substitutionIntervalMinutes,
@@ -241,6 +242,18 @@ export async function injurySub(
 
   const splitMinute = Math.floor((shift.startMinute + shift.endMinute) / 2)
 
+  // 1. Update game roster: move playerOut to injured, ensure playerIn is active
+  const newActive = game.activePlayerIds.filter(id => id !== playerOutId)
+  if (!newActive.includes(playerInId)) newActive.push(playerInId)
+  const newInjured = [...(game.injuredPlayerIds ?? []).filter(id => id !== playerInId), playerOutId]
+  await db.games.update(gameId, { activePlayerIds: newActive, injuredPlayerIds: newInjured })
+
+  // 2. Update current shift lineup (swap out injured, keep other 4)
+  const currentLineup: string[] = JSON.parse(shift.lineupJson)
+  const updatedLineup = currentLineup.map(pid => pid === playerOutId ? playerInId : pid)
+  await db.shifts.update(shiftId, { lineupJson: JSON.stringify(updatedLineup) })
+
+  // 3. Create ShiftSplit record for playtime accounting
   await db.shiftSplits.add({
     id: crypto.randomUUID(),
     shiftId,
@@ -249,11 +262,10 @@ export async function injurySub(
     playerInId,
   })
 
+  // 4. Recalculate future shifts with updated roster
   const segments = await db.segments.where('gameId').equals(gameId).sortBy('number')
   const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
-  const completedSegmentIds = new Set(
-    allShifts.filter(s => s.status === 'COMPLETED').map(s => s.segmentId),
-  )
+  const completedShiftIdSet = new Set(allShifts.filter(s => s.status === 'COMPLETED').map(s => s.id))
 
   // Calculate playtime from completed shifts + current shift split
   const existingPlaytime = new Map<string, number>()
@@ -264,7 +276,7 @@ export async function injurySub(
     const dur = s.endMinute - s.startMinute
 
     if (s.id === shiftId) {
-      for (const pid of lineup) {
+      for (const pid of currentLineup) {
         if (pid === playerOutId) {
           existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + splitMinute)
         } else if (pid === playerInId) {
@@ -273,18 +285,18 @@ export async function injurySub(
           existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
         }
       }
-    } else if (completedSegmentIds.has(s.segmentId)) {
+    } else if (completedShiftIdSet.has(s.id)) {
       for (const pid of lineup) {
         existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
       }
     }
   }
 
-  for (const pid of game.activePlayerIds) {
+  for (const pid of newActive) {
     if (!existingPlaytime.has(pid)) existingPlaytime.set(pid, 0)
   }
 
-  // Find the current segment index and recalculate from the next shift onward
+  // Recalculate from the next shift in the current segment onward
   const currentSegIdx = segments.findIndex(s => s.id === shift.segmentId)
   const segmentShifts = allShifts
     .filter(s => s.segmentId === shift.segmentId)
@@ -292,44 +304,38 @@ export async function injurySub(
   const shiftIndexInSegment = segmentShifts.findIndex(s => s.id === shiftId)
 
   for (let si = currentSegIdx; si < segments.length; si++) {
-    const segment = segments[si]
-    const isCurrentSegment = si === currentSegIdx
     const segShifts = allShifts
-      .filter(s => s.segmentId === segment.id)
+      .filter(s => s.segmentId === segments[si].id)
       .sort((a, b) => a.startMinute - b.startMinute)
 
-    const interval = game.substitutionIntervalMinutes
+    const isCurrentSegment = si === currentSegIdx
     const segShiftsToReplace = isCurrentSegment
       ? segShifts.slice(shiftIndexInSegment + 1)
       : segShifts
 
-    if (segShiftsToReplace.length > 0) {
-      const lineupResults = generateLineups(
-        game.activePlayerIds,
-        1,
-        segShiftsToReplace.reduce((sum, s) => sum + (s.endMinute - s.startMinute), 0),
-        interval,
-        existingPlaytime,
-      )
+    if (segShiftsToReplace.length === 0) continue
 
-      // Update playtime with newly generated shifts
-      for (const lineupSeg of lineupResults) {
-        for (const shiftRes of lineupSeg.shifts) {
-          for (const pid of shiftRes.lineup) {
-            existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + shiftRes.shiftDuration)
-          }
+    const totalDuration = segShiftsToReplace.reduce((sum, s) => sum + (s.endMinute - s.startMinute), 0)
+    const lineupResults = generateLineups(
+      newActive,
+      1,
+      totalDuration,
+      game.substitutionIntervalMinutes,
+      existingPlaytime,
+    )
+
+    for (const lineupSeg of lineupResults) {
+      for (const shiftRes of lineupSeg.shifts) {
+        for (const pid of shiftRes.lineup) {
+          existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + shiftRes.shiftDuration)
         }
       }
+    }
 
-      let minute = segShiftsToReplace[0].startMinute
-      for (let i = 0; i < segShiftsToReplace.length && i < lineupResults[0]?.shifts.length; i++) {
-        const shiftRes = lineupResults[0].shifts[i]
-        const targetShift = segShiftsToReplace[i]
-        await db.shifts.update(targetShift.id, {
-          lineupJson: JSON.stringify(shiftRes.lineup),
-        })
-        minute += shiftRes.shiftDuration
-      }
+    for (let i = 0; i < segShiftsToReplace.length && i < (lineupResults[0]?.shifts.length ?? 0); i++) {
+      await db.shifts.update(segShiftsToReplace[i].id, {
+        lineupJson: JSON.stringify(lineupResults[0].shifts[i].lineup),
+      })
     }
   }
 }
@@ -341,7 +347,7 @@ export async function updateActiveRoster(
   const game = await db.games.get(gameId)
   if (!game) return
 
-  await db.games.update(gameId, { activePlayerIds: newActivePlayerIds })
+  await db.games.update(gameId, { activePlayerIds: newActivePlayerIds, injuredPlayerIds: [] })
 
   const segments = await db.segments.where('gameId').equals(gameId).sortBy('number')
   const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
