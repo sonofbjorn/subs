@@ -25,8 +25,8 @@ export default function GameSetup() {
 
   const [gameName, setGameName] = useState(defaultName)
   const [structure, setStructure] = useState<GameStructure>('QUARTERS')
-  const [duration, setDuration] = useState(8)
-  const [interval, setInterval] = useState(2)
+  const [duration, setDuration] = useState(10)
+  const [interval, setInterval] = useState(5)
 
   if (team === undefined || allPlayers === undefined) {
     return (
