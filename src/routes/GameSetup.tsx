@@ -27,6 +27,7 @@ export default function GameSetup() {
   const [structure, setStructure] = useState<GameStructure>('QUARTERS')
   const [duration, setDuration] = useState(10)
   const [interval, setInterval] = useState(5)
+  const [maxConsecutive, setMaxConsecutive] = useState(2)
 
   if (team === undefined || allPlayers === undefined) {
     return (
@@ -56,7 +57,7 @@ export default function GameSetup() {
 
   function handleNext() {
     navigate(`/teams/${teamId}/game-setup/select`, {
-      state: { gameName, structure, duration, interval },
+      state: { gameName, structure, duration, interval, maxConsecutive },
     })
   }
 
@@ -143,12 +144,34 @@ export default function GameSetup() {
           </div>
         </Card>
 
+        <Card className="space-y-3">
+          <label className="block text-sm font-medium text-slate-700">
+            Max consecutive shifts: <span className="font-bold text-orange-600">{maxConsecutive}</span>
+          </label>
+          <input
+            type="range"
+            min={1}
+            max={5}
+            step={1}
+            value={maxConsecutive}
+            onChange={e => setMaxConsecutive(Number(e.target.value))}
+            className="w-full accent-orange-500"
+          />
+          <div className="flex justify-between text-xs text-slate-400">
+            <span>1</span>
+            <span>5</span>
+          </div>
+          <p className="text-xs text-slate-500">
+            Soft limit — may be exceeded if not enough substitutes available
+          </p>
+        </Card>
+
         <Card className="space-y-2 bg-slate-50">
           <h3 className="text-sm font-semibold text-slate-700">Summary</h3>
           <div className="space-y-1 text-sm text-slate-600">
             <p>{segmentCount} {segmentLabel}{segmentCount > 1 ? 's' : ''} × {duration} min = {totalMinutes} min total</p>
             <p>~{shiftsPerSegment} shifts per {segmentLabel} ({interval} min each)</p>
-            <p>{activePlayerCount} active player{activePlayerCount !== 1 ? 's' : ''} on roster</p>
+            <p>Max {maxConsecutive} consecutive shifts &middot; {activePlayerCount} active player{activePlayerCount !== 1 ? 's' : ''} on roster</p>
           </div>
           {notEnoughPlayers && (
             <p className="flex items-center gap-1.5 text-sm text-red-500">

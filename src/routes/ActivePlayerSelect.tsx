@@ -13,6 +13,7 @@ interface SetupLocationState {
   structure: GameStructure
   duration: number
   interval: number
+  maxConsecutive: number
 }
 
 interface EditLocationState {
@@ -118,6 +119,7 @@ export default function ActivePlayerSelect() {
       structure: config.structure,
       durationMinutes: config.duration,
       substitutionIntervalMinutes: config.interval,
+      maxConsecutiveShifts: config.maxConsecutive,
     })
     navigate(`/teams/${teamId}/lineup/${newGameId}`)
   }

@@ -44,6 +44,7 @@ function runGeneration(
   segmentDurationMinutes: number,
   intervalMinutes: number,
   existingPlaytime?: Map<string, number>,
+  maxConsecutiveShifts: number = 2,
 ): LineupResult[] {
   const timeline = new Map<string, PlayerTimeline>()
 
@@ -72,7 +73,9 @@ function runGeneration(
         const restMultiplier = s.lastShiftPlayed
           ? 1.0
           : 1 + s.consecutiveRested * 0.3
-        return { playerId: id, weight: baseWeight * restMultiplier }
+        const overLimit = s.lastShiftPlayed ? Math.max(0, s.consecutivePlayed - maxConsecutiveShifts) : 0
+        const consecutivePenalty = overLimit > 0 ? 1 / (1 + overLimit) : 1.0
+        return { playerId: id, weight: baseWeight * restMultiplier * consecutivePenalty }
       })
 
       const lineup = weightedRandomPick(candidates, Math.min(5, activePlayerIds.length))
@@ -123,6 +126,7 @@ export function generateLineups(
   segmentDurationMinutes: number,
   intervalMinutes: number,
   existingPlaytime?: Map<string, number>,
+  maxConsecutiveShifts: number = 2,
 ): LineupResult[] {
   const targetVariance = intervalMinutes
 
@@ -136,6 +140,7 @@ export function generateLineups(
       segmentDurationMinutes,
       intervalMinutes,
       existingPlaytime,
+      maxConsecutiveShifts,
     )
 
     const variance = computeVariance(result, existingPlaytime)
@@ -155,6 +160,7 @@ export function generateLineups(
     segmentDurationMinutes,
     intervalMinutes,
     existingPlaytime,
+    maxConsecutiveShifts,
   )
 }
 

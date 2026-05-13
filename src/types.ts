@@ -24,6 +24,7 @@ export interface Game {
   structure: GameStructure
   durationMinutes: number
   substitutionIntervalMinutes: number
+  maxConsecutiveShifts: number
   status: GameStatus
   createdAt: Date
 }

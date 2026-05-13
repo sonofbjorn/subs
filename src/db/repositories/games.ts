@@ -9,6 +9,7 @@ interface CreateGameInput {
   structure: GameStructure
   durationMinutes: number
   substitutionIntervalMinutes: number
+  maxConsecutiveShifts?: number
 }
 
 export async function createGame(input: CreateGameInput): Promise<string> {
@@ -24,6 +25,7 @@ export async function createGame(input: CreateGameInput): Promise<string> {
     structure: input.structure,
     durationMinutes: input.durationMinutes,
     substitutionIntervalMinutes: input.substitutionIntervalMinutes,
+    maxConsecutiveShifts: input.maxConsecutiveShifts ?? 2,
     status: 'DRAFT',
     createdAt: now,
   }
@@ -50,6 +52,8 @@ export async function createGame(input: CreateGameInput): Promise<string> {
     segmentCount,
     input.durationMinutes,
     input.substitutionIntervalMinutes,
+    undefined,
+    input.maxConsecutiveShifts ?? 2,
   )
 
   const allShifts: Shift[] = []
@@ -95,6 +99,8 @@ export async function recalculateLineups(gameId: string): Promise<void> {
     segmentCount,
     game.durationMinutes,
     game.substitutionIntervalMinutes,
+    undefined,
+    game.maxConsecutiveShifts ?? 2,
   )
 
   const allShifts: Shift[] = []
@@ -322,6 +328,7 @@ export async function injurySub(
       totalDuration,
       game.substitutionIntervalMinutes,
       existingPlaytime,
+      game.maxConsecutiveShifts ?? 2,
     )
 
     for (const lineupSeg of lineupResults) {
@@ -424,6 +431,7 @@ export async function updateActiveRoster(
       totalDuration,
       game.substitutionIntervalMinutes,
       existingPlaytime,
+      game.maxConsecutiveShifts ?? 2,
     )
 
     for (const lineupSeg of lineupResults) {
