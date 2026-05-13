@@ -120,6 +120,31 @@ function computeVariance(
   return times.length > 0 ? Math.max(...times) - Math.min(...times) : 0
 }
 
+function countConsecutiveViolations(
+  lineups: LineupResult[],
+  maxConsecutive: number,
+): number {
+  const consecPlayed = new Map<string, number>()
+  let violations = 0
+
+  for (const seg of lineups) {
+    for (const shift of seg.shifts) {
+      for (const pid of shift.lineup) {
+        const count = (consecPlayed.get(pid) ?? 0) + 1
+        consecPlayed.set(pid, count)
+        if (count > maxConsecutive) violations++
+      }
+      for (const pid of consecPlayed.keys()) {
+        if (!shift.lineup.includes(pid)) {
+          consecPlayed.set(pid, 0)
+        }
+      }
+    }
+  }
+
+  return violations
+}
+
 export function generateLineups(
   activePlayerIds: string[],
   segmentCount: number,
@@ -131,9 +156,9 @@ export function generateLineups(
   const targetVariance = intervalMinutes
 
   let best: LineupResult[] | null = null
-  let bestVariance = Infinity
+  let bestScore = Infinity
 
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 200; attempt++) {
     const result = runGeneration(
       activePlayerIds,
       segmentCount,
@@ -144,13 +169,16 @@ export function generateLineups(
     )
 
     const variance = computeVariance(result, existingPlaytime)
-    if (variance <= targetVariance) {
+    const violations = countConsecutiveViolations(result, maxConsecutiveShifts)
+
+    if (variance <= targetVariance && violations === 0) {
       return result
     }
 
-    if (variance < bestVariance) {
+    const score = variance + violations * intervalMinutes * 100
+    if (score < bestScore) {
       best = result
-      bestVariance = variance
+      bestScore = score
     }
   }
 
