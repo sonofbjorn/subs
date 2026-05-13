@@ -14,10 +14,15 @@ export default function Dialog({ open, onClose, title, children, actions }: Dial
   useEffect(() => {
     if (open) {
       document.body.style.overflow = 'hidden'
+      document.body.style.touchAction = 'none'
     } else {
       document.body.style.overflow = ''
+      document.body.style.touchAction = ''
     }
-    return () => { document.body.style.overflow = '' }
+    return () => {
+      document.body.style.overflow = ''
+      document.body.style.touchAction = ''
+    }
   }, [open])
 
   if (!open) return null
