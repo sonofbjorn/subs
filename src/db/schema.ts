@@ -21,6 +21,15 @@ export class SubsDB extends Dexie {
       shiftSplits: '&id, shiftId, minute, playerOutId, playerInId',
       plannedPlaytimes: '&id, gameId, playerId, plannedMinutes',
     })
+    this.version(2).stores({
+      teams: '&id, name, createdAt',
+      players: '&id, teamId, name, number, isArchived',
+      games: '&id, teamId, name, status, createdAt',
+      segments: '&id, gameId, number, status',
+      shifts: '&id, gameId, segmentId, startMinute, endMinute, status',
+      shiftSplits: '&id, shiftId, minute, playerOutId, playerInId',
+      plannedPlaytimes: '&id, gameId, playerId, plannedMinutes',
+    })
   }
 }
 

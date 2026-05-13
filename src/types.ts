@@ -37,6 +37,8 @@ export interface Segment {
   status: SegmentStatus
 }
 
+export type ShiftStatus = 'PENDING' | 'CURRENT' | 'COMPLETED'
+
 export interface Shift {
   id: string
   gameId: string
@@ -44,6 +46,7 @@ export interface Shift {
   startMinute: number
   endMinute: number
   lineupJson: string
+  status: ShiftStatus
 }
 
 export interface ShiftSplit {

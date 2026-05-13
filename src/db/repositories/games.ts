@@ -64,6 +64,7 @@ export async function createGame(input: CreateGameInput): Promise<string> {
         startMinute: minute,
         endMinute: minute + shiftResult.shiftDuration,
         lineupJson: JSON.stringify(shiftResult.lineup),
+        status: 'PENDING' as const,
       })
       minute += shiftResult.shiftDuration
     }
@@ -108,6 +109,7 @@ export async function recalculateLineups(gameId: string): Promise<void> {
         startMinute: minute,
         endMinute: minute + shiftResult.shiftDuration,
         lineupJson: JSON.stringify(shiftResult.lineup),
+        status: 'PENDING' as const,
       })
       minute += shiftResult.shiftDuration
     }
@@ -126,42 +128,105 @@ export async function startGame(gameId: string): Promise<void> {
     .sortBy('number')
   if (segments.length > 0) {
     await db.segments.update(segments[0].id, { status: 'IN_PROGRESS' })
+    const shifts = await db.shifts
+      .where('segmentId')
+      .equals(segments[0].id)
+      .sortBy('startMinute')
+    if (shifts.length > 0) {
+      await db.shifts.update(shifts[0].id, { status: 'CURRENT' })
+    }
   }
 }
 
-export async function completeSegment(gameId: string, segmentId: string): Promise<void> {
-  await db.segments.update(segmentId, { status: 'COMPLETED' })
+export async function advanceShift(gameId: string): Promise<void> {
+  const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
+  const currentShift = allShifts.find(s => s.status === 'CURRENT')
+  if (!currentShift) return
 
-  const segments = await db.segments
-    .where('gameId')
-    .equals(gameId)
-    .sortBy('number')
+  await db.shifts.update(currentShift.id, { status: 'COMPLETED' })
 
-  const currentIdx = segments.findIndex(s => s.id === segmentId)
-  const nextSegment = currentIdx >= 0 && currentIdx < segments.length - 1 ? segments[currentIdx + 1] : null
+  const segments = await db.segments.where('gameId').equals(gameId).sortBy('number')
+  const currentSegment = segments.find(s => s.id === currentShift.segmentId)
 
-  if (nextSegment) {
-    await db.segments.update(nextSegment.id, { status: 'IN_PROGRESS' })
+  // Find next shift in same segment
+  const segmentShifts = allShifts
+    .filter(s => s.segmentId === currentShift.segmentId)
+    .sort((a, b) => a.startMinute - b.startMinute)
+  const shiftIdx = segmentShifts.findIndex(s => s.id === currentShift.id)
+
+  if (shiftIdx < segmentShifts.length - 1) {
+    // Next shift in same segment
+    await db.shifts.update(segmentShifts[shiftIdx + 1].id, { status: 'CURRENT' })
   } else {
-    await db.games.update(gameId, { status: 'COMPLETED' })
+    // Segment complete
+    if (currentSegment) {
+      await db.segments.update(currentSegment.id, { status: 'COMPLETED' })
+    }
+    // Advance to next segment
+    const segIdx = segments.findIndex(s => s.id === currentShift.segmentId)
+    if (segIdx < segments.length - 1) {
+      const nextSegment = segments[segIdx + 1]
+      await db.segments.update(nextSegment.id, { status: 'IN_PROGRESS' })
+      const nextShifts = allShifts
+        .filter(s => s.segmentId === nextSegment.id)
+        .sort((a, b) => a.startMinute - b.startMinute)
+      if (nextShifts.length > 0) {
+        await db.shifts.update(nextShifts[0].id, { status: 'CURRENT' })
+      }
+    } else {
+      // Game complete
+      await db.games.update(gameId, { status: 'COMPLETED' })
+    }
   }
 }
 
-export async function uncompleteSegment(gameId: string, segmentId: string): Promise<void> {
-  await db.segments.update(segmentId, { status: 'IN_PROGRESS' })
+export async function uncompleteShift(gameId: string): Promise<void> {
+  const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
+  const segments = await db.segments.where('gameId').equals(gameId).sortBy('number')
 
-  const segments = await db.segments
-    .where('gameId')
-    .equals(gameId)
-    .sortBy('number')
+  // Find the last COMPLETED shift (the most recent one we can revert)
+  const completed = allShifts.filter(s => s.status === 'COMPLETED').sort((a, b) => {
+    const segA = segments.findIndex(seg => seg.id === a.segmentId)
+    const segB = segments.findIndex(seg => seg.id === b.segmentId)
+    if (segA !== segB) return segA - segB
+    return a.startMinute - b.startMinute
+  })
 
-  const currentIdx = segments.findIndex(s => s.id === segmentId)
-  if (currentIdx < segments.length - 1) {
-    const nextSegment = segments[currentIdx + 1]
-    await db.segments.update(nextSegment.id, { status: 'PENDING' })
+  const lastCompleted = completed[completed.length - 1]
+  if (!lastCompleted) return
+
+  // Set the CURRENT shift back to PENDING (if there is one)
+  const current = allShifts.find(s => s.status === 'CURRENT')
+  if (current) {
+    await db.shifts.update(current.id, { status: 'PENDING' })
   }
 
-  await db.games.update(gameId, { status: 'ACTIVE' })
+  // Revert the last COMPLETED shift to CURRENT
+  await db.shifts.update(lastCompleted.id, { status: 'CURRENT' })
+
+  // Handle segment status cascading
+  const lastCompletedSegment = segments.find(s => s.id === lastCompleted.segmentId)
+  if (lastCompletedSegment && lastCompletedSegment.status === 'COMPLETED') {
+    await db.segments.update(lastCompletedSegment.id, { status: 'IN_PROGRESS' })
+  }
+
+  // If the current shift was in a different segment, reset that segment
+  if (current && current.segmentId !== lastCompleted.segmentId) {
+    const oldSegment = segments.find(s => s.id === current.segmentId)
+    if (oldSegment && oldSegment.status === 'IN_PROGRESS') {
+      const oldSegShifts = allShifts.filter(s => s.segmentId === oldSegment.id)
+      const anyCompleted = oldSegShifts.some(s => s.status === 'COMPLETED')
+      if (!anyCompleted) {
+        await db.segments.update(oldSegment.id, { status: 'PENDING' })
+      }
+    }
+  }
+
+  // Ensure game is ACTIVE
+  const game = await db.games.get(gameId)
+  if (game && game.status === 'COMPLETED') {
+    await db.games.update(gameId, { status: 'ACTIVE' })
+  }
 }
 
 export async function injurySub(
@@ -186,9 +251,11 @@ export async function injurySub(
 
   const segments = await db.segments.where('gameId').equals(gameId).sortBy('number')
   const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
-  const completedSegmentIds = segments.filter(s => s.status === 'COMPLETED').map(s => s.id)
+  const completedSegmentIds = new Set(
+    allShifts.filter(s => s.status === 'COMPLETED').map(s => s.segmentId),
+  )
 
-  // Calculate playtime from completed segments + current shift split
+  // Calculate playtime from completed shifts + current shift split
   const existingPlaytime = new Map<string, number>()
   const shiftDuration = shift.endMinute - shift.startMinute
 
@@ -206,7 +273,7 @@ export async function injurySub(
           existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
         }
       }
-    } else if (completedSegmentIds.includes(s.segmentId)) {
+    } else if (completedSegmentIds.has(s.segmentId)) {
       for (const pid of lineup) {
         existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
       }
@@ -280,15 +347,18 @@ export async function updateActiveRoster(
   const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
   const allSplits = await db.shiftSplits.toArray()
 
-  const completedSegmentIds = segments.filter(s => s.status === 'COMPLETED').map(s => s.id)
-  const currentSegIdx = segments.findIndex(s => s.status === 'IN_PROGRESS')
+  const completedShiftIds = new Set(allShifts.filter(s => s.status === 'COMPLETED').map(s => s.id))
+  const currentShift = allShifts.find(s => s.status === 'CURRENT')
+  const currentSegIdx = currentShift
+    ? segments.findIndex(s => s.id === currentShift.segmentId)
+    : -1
 
   if (currentSegIdx < 0) return
 
-  // Calculate existing playtime from completed segment shifts
+  // Calculate existing playtime from completed shifts
   const existingPlaytime = new Map<string, number>()
   for (const s of allShifts) {
-    if (!completedSegmentIds.includes(s.segmentId)) continue
+    if (!completedShiftIds.has(s.id)) continue
     const lineup: string[] = JSON.parse(s.lineupJson)
     const dur = s.endMinute - s.startMinute
     for (const pid of lineup) {
@@ -296,10 +366,11 @@ export async function updateActiveRoster(
     }
   }
 
-  // Handle splits in completed segments
+  // Handle splits in completed shifts
   for (const split of allSplits) {
+    if (!completedShiftIds.has(split.shiftId)) continue
     const shift = allShifts.find(s => s.id === split.shiftId)
-    if (!shift || !completedSegmentIds.includes(shift.segmentId)) continue
+    if (!shift) continue
     const lineup: string[] = JSON.parse(shift.lineupJson)
     const dur = shift.endMinute - shift.startMinute
     for (const pid of lineup) {

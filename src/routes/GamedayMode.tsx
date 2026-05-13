@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity } from 'lucide-react'
+import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity, ChevronRight } from 'lucide-react'
 import type { Player, Shift, Segment } from '../types'
 import { db } from '../db/schema'
-import { completeSegment, uncompleteSegment, injurySub } from '../db/repositories/games'
+import { advanceShift, uncompleteShift, injurySub } from '../db/repositories/games'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 import Dialog from '../components/ui/dialog'
@@ -52,18 +52,22 @@ export default function GamedayMode() {
   const playerNumberMap = new Map(allPlayers.map(p => [p.id, p.number]))
 
   const currentSegment = segments.find(s => s.status === 'IN_PROGRESS')
-  const completedSegments = segments.filter(s => s.status === 'COMPLETED')
-  const lastCompleted = completedSegments[completedSegments.length - 1]
   const allDone = segments.length > 0 && segments.every(s => s.status === 'COMPLETED')
 
+  const currentShift = shifts.find(s => s.status === 'CURRENT')
   const segmentShifts = currentSegment
-    ? shifts.filter(s => s.segmentId === currentSegment.id).sort((a, b) => a.startMinute - b.startMinute)
+    ? shifts
+        .filter(s => s.segmentId === currentSegment.id)
+        .sort((a, b) => a.startMinute - b.startMinute)
     : []
+  const completedShiftCount = segmentShifts.filter(s => s.status === 'COMPLETED').length
+  const hasCompletedShifts = shifts.some(s => s.status === 'COMPLETED')
 
-  const currentShift = segmentShifts[0]
   const onCourt: string[] = currentShift ? JSON.parse(currentShift.lineupJson) : []
   const onCourtSet = new Set(onCourt)
-  const bench = game.activePlayerIds.filter(pid => !onCourtSet.has(pid))
+  const bench = currentShift
+    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid))
+    : []
 
   const splitMinutes = currentShift
     ? Math.floor((currentShift.startMinute + currentShift.endMinute) / 2)
@@ -71,9 +75,8 @@ export default function GamedayMode() {
 
   function getPlaytimeTotals(): Map<string, number> {
     const pt = new Map<string, number>()
-    const completedIds = new Set(segments!.filter(s => s.status === 'COMPLETED' || s.id === currentSegment?.id).map(s => s.id))
     for (const shift of shifts!) {
-      if (!completedIds.has(shift.segmentId)) continue
+      if (shift.status !== 'COMPLETED') continue
       const lineup: string[] = JSON.parse(shift.lineupJson)
       const dur = shift.endMinute - shift.startMinute
       for (const pid of lineup) {
@@ -109,14 +112,14 @@ export default function GamedayMode() {
     setSelectedReplacement(null)
   }
 
-  async function handleComplete() {
-    if (!currentSegment || !gameId) return
-    await completeSegment(gameId, currentSegment.id)
+  async function handleCompleteShift() {
+    if (!gameId) return
+    await advanceShift(gameId)
   }
 
   async function handleUncomplete() {
-    if (!lastCompleted || !gameId) return
-    await uncompleteSegment(gameId, lastCompleted.id)
+    if (!gameId) return
+    await uncompleteShift(gameId)
   }
 
   return (
@@ -134,32 +137,35 @@ export default function GamedayMode() {
         <Card className="py-12 text-center">
           <CheckCircle className="mx-auto mb-3 h-12 w-12 text-green-500" />
           <h2 className="text-lg font-semibold text-slate-900">Game Complete!</h2>
-          <p className="mt-1 text-sm text-slate-500">All segments have been completed.</p>
+          <p className="mt-1 text-sm text-slate-500">All shifts across all segments have been completed.</p>
           <div className="mt-6 flex justify-center gap-3">
-            <Button onClick={async () => {
-              if (lastCompleted && gameId) {
-                await uncompleteSegment(gameId, lastCompleted.id)
-              }
-            }}>
-              <RotateCcw className="mr-1.5 h-4 w-4" />
-              Undo Last Segment
-            </Button>
+            {hasCompletedShifts && (
+              <Button onClick={handleUncomplete}>
+                <RotateCcw className="mr-1.5 h-4 w-4" />
+                Undo Last Shift
+              </Button>
+            )}
             <Button variant="secondary" onClick={() => navigate(`/teams/${teamId}/lineup/${gameId}`)}>
               View Summary
             </Button>
           </div>
         </Card>
-      ) : currentSegment ? (
+      ) : currentSegment && currentShift ? (
         <>
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-slate-900">
-              {currentSegment.label}
-              <span className="ml-2 text-sm font-normal text-slate-500">
-                (Shifts: {segmentShifts.length})
-              </span>
-            </h2>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">
+                {currentSegment.label}
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  Shift {completedShiftCount + 1} of {segmentShifts.length}
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                {currentShift.startMinute}&ndash;{currentShift.endMinute} min
+              </p>
+            </div>
             <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">
-              In Progress
+              Active
             </span>
           </div>
 
@@ -200,24 +206,40 @@ export default function GamedayMode() {
             )}
           </Card>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {segmentShifts.map((shift, i) => {
               const lineup: string[] = JSON.parse(shift.lineupJson)
+              const isCurrent = shift.id === currentShift.id
+              const isCompleted = shift.status === 'COMPLETED'
               return (
                 <div
                   key={shift.id}
-                  className={`rounded-lg border px-4 py-3 ${
-                    i === 0 ? 'border-orange-300 bg-orange-50' : 'border-slate-200'
+                  className={`rounded-lg border px-4 py-3 transition-colors ${
+                    isCurrent
+                      ? 'border-orange-300 bg-orange-50'
+                      : isCompleted
+                        ? 'border-green-200 bg-green-50'
+                        : 'border-slate-200'
                   }`}
                 >
-                  <p className="mb-1.5 text-xs font-medium text-slate-500">
-                    Shift {i + 1} &middot; {shift.startMinute}&ndash;{shift.endMinute} min
-                  </p>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <p className="text-xs font-medium text-slate-500">
+                      Shift {i + 1} &middot; {shift.startMinute}&ndash;{shift.endMinute} min
+                    </p>
+                    {isCompleted && <CheckCircle className="h-3.5 w-3.5 text-green-500" />}
+                    {isCurrent && <ChevronRight className="h-3.5 w-3.5 text-orange-500" />}
+                  </div>
                   <div className="flex flex-wrap gap-1.5">
                     {lineup.map(pid => (
                       <span
                         key={pid}
-                        className="inline-flex items-center rounded-full bg-white px-2.5 py-0.5 text-xs font-medium text-slate-700 shadow-sm"
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium shadow-sm ${
+                          isCurrent
+                            ? 'bg-white text-slate-700'
+                            : isCompleted
+                              ? 'bg-green-100 text-green-700'
+                              : 'bg-white text-slate-400'
+                        }`}
                       >
                         {playerMap.get(pid) ?? 'Unknown'}
                       </span>
@@ -241,18 +263,25 @@ export default function GamedayMode() {
           </div>
 
           <div className="mt-3 flex flex-col gap-3">
-            <Button onClick={handleComplete} size="lg" className="w-full">
+            <Button onClick={handleCompleteShift} size="lg" className="w-full">
               <CheckCircle className="mr-1.5 h-5 w-5" />
-              Complete {currentSegment.label}
+              Complete Shift {completedShiftCount + 1}
             </Button>
-            {lastCompleted && (
+            {hasCompletedShifts && (
               <Button variant="secondary" onClick={handleUncomplete} className="w-full">
                 <RotateCcw className="mr-1.5 h-4 w-4" />
-                Un-complete {lastCompleted.label}
+                Un-complete Last Shift
               </Button>
             )}
           </div>
         </>
+      ) : currentSegment && !currentShift ? (
+        <Card className="py-12 text-center">
+          <p className="text-sm text-slate-500">{currentSegment.label} has no shifts.</p>
+          <Button variant="ghost" onClick={() => navigate(`/teams/${teamId}/lineup/${gameId}`)} className="mt-3">
+            Go to Lineup
+          </Button>
+        </Card>
       ) : (
         <Card className="py-12 text-center">
           <Users className="mx-auto mb-3 h-12 w-12 text-slate-300" />
@@ -270,12 +299,7 @@ export default function GamedayMode() {
         actions={
           <>
             <Button variant="secondary" onClick={() => setSubTarget(null)}>Cancel</Button>
-            <Button
-              onClick={handleSubConfirm}
-              disabled={!selectedReplacement}
-            >
-              Confirm Sub
-            </Button>
+            <Button onClick={handleSubConfirm} disabled={!selectedReplacement}>Confirm Sub</Button>
           </>
         }
       >
