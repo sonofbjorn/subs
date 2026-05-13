@@ -158,7 +158,7 @@ export function generateLineups(
   let best: LineupResult[] | null = null
   let bestScore = Infinity
 
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < 500; attempt++) {
     const result = runGeneration(
       activePlayerIds,
       segmentCount,
