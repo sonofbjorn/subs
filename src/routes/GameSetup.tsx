@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft, Clock } from 'lucide-react'
-import type { GameStructure } from '../types'
+import { ArrowLeft, Clock, AlertTriangle } from 'lucide-react'
+import type { GameStructure, Player } from '../types'
 import { db } from '../db/schema'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
@@ -13,6 +13,10 @@ export default function GameSetup() {
   const navigate = useNavigate()
 
   const team = useLiveQuery(() => teamId ? db.teams.get(teamId) : undefined, [teamId])
+  const allPlayers = useLiveQuery(() => {
+    if (!teamId) return Promise.resolve([] as Player[])
+    return db.players.where('teamId').equals(teamId).toArray()
+  }, [teamId])
 
   const defaultName = new Date().toLocaleString(undefined, {
     month: 'short', day: 'numeric', year: 'numeric',
@@ -24,7 +28,7 @@ export default function GameSetup() {
   const [duration, setDuration] = useState(8)
   const [interval, setInterval] = useState(2)
 
-  if (team === undefined) {
+  if (team === undefined || allPlayers === undefined) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <p className="text-slate-500">Loading...</p>
@@ -40,6 +44,9 @@ export default function GameSetup() {
       </div>
     )
   }
+
+  const activePlayerCount = allPlayers.filter(p => !p.isArchived).length
+  const notEnoughPlayers = activePlayerCount < 5
 
   const segmentLabel = structure === 'HALVES' ? 'half' : 'quarter'
   const segmentCount = structure === 'HALVES' ? 2 : 4
@@ -141,7 +148,14 @@ export default function GameSetup() {
           <div className="space-y-1 text-sm text-slate-600">
             <p>{segmentCount} {segmentLabel}{segmentCount > 1 ? 's' : ''} × {duration} min = {totalMinutes} min total</p>
             <p>~{shiftsPerSegment} shifts per {segmentLabel} ({interval} min each)</p>
+            <p>{activePlayerCount} active player{activePlayerCount !== 1 ? 's' : ''} on roster</p>
           </div>
+          {notEnoughPlayers && (
+            <p className="flex items-center gap-1.5 text-sm text-red-500">
+              <AlertTriangle className="h-4 w-4" />
+              Need at least 5 active players. Add more to your roster first.
+            </p>
+          )}
           {showWarning && (
             <p className="flex items-center gap-1.5 text-sm text-amber-600">
               <Clock className="h-4 w-4" />
@@ -150,7 +164,7 @@ export default function GameSetup() {
           )}
         </Card>
 
-        <Button onClick={handleNext} size="lg" className="w-full">
+        <Button onClick={handleNext} size="lg" className="w-full" disabled={notEnoughPlayers}>
           Select Active Players
         </Button>
       </div>

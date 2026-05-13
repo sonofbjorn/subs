@@ -133,7 +133,7 @@ export default function LineupDisplay() {
           <p className="text-sm text-slate-500">No shifts generated for this segment.</p>
         </Card>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-slate-200">
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50">
