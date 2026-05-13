@@ -38,7 +38,7 @@ function weightedRandomPick(
   return result
 }
 
-export function generateLineups(
+function runGeneration(
   activePlayerIds: string[],
   segmentCount: number,
   segmentDurationMinutes: number,
@@ -99,6 +99,63 @@ export function generateLineups(
   }
 
   return results
+}
+
+function computeVariance(
+  lineups: LineupResult[],
+  existingPlaytime?: Map<string, number>,
+): number {
+  const total = new Map(existingPlaytime)
+  for (const seg of lineups) {
+    for (const shift of seg.shifts) {
+      for (const pid of shift.lineup) {
+        total.set(pid, (total.get(pid) ?? 0) + shift.shiftDuration)
+      }
+    }
+  }
+  const times = [...total.values()]
+  return times.length > 0 ? Math.max(...times) - Math.min(...times) : 0
+}
+
+export function generateLineups(
+  activePlayerIds: string[],
+  segmentCount: number,
+  segmentDurationMinutes: number,
+  intervalMinutes: number,
+  existingPlaytime?: Map<string, number>,
+): LineupResult[] {
+  const targetVariance = intervalMinutes
+
+  let best: LineupResult[] | null = null
+  let bestVariance = Infinity
+
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const result = runGeneration(
+      activePlayerIds,
+      segmentCount,
+      segmentDurationMinutes,
+      intervalMinutes,
+      existingPlaytime,
+    )
+
+    const variance = computeVariance(result, existingPlaytime)
+    if (variance <= targetVariance) {
+      return result
+    }
+
+    if (variance < bestVariance) {
+      best = result
+      bestVariance = variance
+    }
+  }
+
+  return best ?? runGeneration(
+    activePlayerIds,
+    segmentCount,
+    segmentDurationMinutes,
+    intervalMinutes,
+    existingPlaytime,
+  )
 }
 
 export function calculatePlaytime(
