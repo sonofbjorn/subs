@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft, CheckCircle, RotateCcw, Users } from 'lucide-react'
+import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity } from 'lucide-react'
 import type { Player, Shift, Segment } from '../types'
 import { db } from '../db/schema'
-import { completeSegment, uncompleteSegment } from '../db/repositories/games'
+import { completeSegment, uncompleteSegment, injurySub } from '../db/repositories/games'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
+import Dialog from '../components/ui/dialog'
 
 export default function GamedayMode() {
   const { teamId, gameId } = useParams()
@@ -26,6 +28,9 @@ export default function GamedayMode() {
     return db.players.where('teamId').equals(teamId).toArray()
   }, [teamId])
 
+  const [subTarget, setSubTarget] = useState<string | null>(null)
+  const [selectedReplacement, setSelectedReplacement] = useState<string | null>(null)
+
   if (game === undefined || team === undefined || segments === undefined || shifts === undefined || allPlayers === undefined) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -44,6 +49,7 @@ export default function GamedayMode() {
   }
 
   const playerMap = new Map(allPlayers.map(p => [p.id, p.name]))
+  const playerNumberMap = new Map(allPlayers.map(p => [p.id, p.number]))
 
   const currentSegment = segments.find(s => s.status === 'IN_PROGRESS')
   const completedSegments = segments.filter(s => s.status === 'COMPLETED')
@@ -58,6 +64,50 @@ export default function GamedayMode() {
   const onCourt: string[] = currentShift ? JSON.parse(currentShift.lineupJson) : []
   const onCourtSet = new Set(onCourt)
   const bench = game.activePlayerIds.filter(pid => !onCourtSet.has(pid))
+
+  const splitMinutes = currentShift
+    ? Math.floor((currentShift.startMinute + currentShift.endMinute) / 2)
+    : 0
+
+  function getPlaytimeTotals(): Map<string, number> {
+    const pt = new Map<string, number>()
+    const completedIds = new Set(segments!.filter(s => s.status === 'COMPLETED' || s.id === currentSegment?.id).map(s => s.id))
+    for (const shift of shifts!) {
+      if (!completedIds.has(shift.segmentId)) continue
+      const lineup: string[] = JSON.parse(shift.lineupJson)
+      const dur = shift.endMinute - shift.startMinute
+      for (const pid of lineup) {
+        pt.set(pid, (pt.get(pid) ?? 0) + dur)
+      }
+    }
+    return pt
+  }
+
+  function suggestReplacement(): string {
+    const playtime = getPlaytimeTotals()
+    let lowest = bench[0]
+    let lowestTime = Infinity
+    for (const pid of bench) {
+      const t = playtime.get(pid) ?? 0
+      if (t < lowestTime) {
+        lowestTime = t
+        lowest = pid
+      }
+    }
+    return lowest
+  }
+
+  function openSubDialog(playerId: string) {
+    setSubTarget(playerId)
+    setSelectedReplacement(suggestReplacement())
+  }
+
+  async function handleSubConfirm() {
+    if (!subTarget || !selectedReplacement || !currentShift || !gameId) return
+    await injurySub(gameId, currentShift.id, subTarget, selectedReplacement)
+    setSubTarget(null)
+    setSelectedReplacement(null)
+  }
 
   async function handleComplete() {
     if (!currentSegment || !gameId) return
@@ -117,12 +167,17 @@ export default function GamedayMode() {
             <h3 className="mb-3 text-sm font-semibold text-slate-700">On Court</h3>
             <div className="space-y-2">
               {onCourt.map(pid => (
-                <div key={pid} className="flex items-center gap-3 rounded-lg bg-orange-50 px-4 py-3">
+                <button
+                  key={pid}
+                  onClick={() => openSubDialog(pid)}
+                  className="flex w-full items-center gap-3 rounded-lg bg-orange-50 px-4 py-3 text-left transition-colors hover:bg-orange-100"
+                >
                   <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500 text-sm font-bold text-white">
-                    {allPlayers.find(p => p.id === pid)?.number?.toString() ?? '?'}
+                    {playerNumberMap.get(pid)?.toString() ?? '?'}
                   </div>
-                  <span className="font-medium text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
-                </div>
+                  <span className="flex-1 font-medium text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
+                  <span className="text-xs text-orange-500">Sub Out</span>
+                </button>
               ))}
             </div>
           </Card>
@@ -173,7 +228,14 @@ export default function GamedayMode() {
             })}
           </div>
 
-          <div className="mt-8 flex flex-col gap-3">
+          <div className="mt-4">
+            <Button variant="secondary" className="w-full">
+              <Activity className="mr-1.5 h-4 w-4" />
+              Edit Gameday Roster
+            </Button>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-3">
             <Button onClick={handleComplete} size="lg" className="w-full">
               <CheckCircle className="mr-1.5 h-5 w-5" />
               Complete {currentSegment.label}
@@ -195,6 +257,56 @@ export default function GamedayMode() {
           </Button>
         </Card>
       )}
+
+      <Dialog
+        open={subTarget !== null}
+        onClose={() => setSubTarget(null)}
+        title="Injury Substitution"
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => setSubTarget(null)}>Cancel</Button>
+            <Button
+              onClick={handleSubConfirm}
+              disabled={!selectedReplacement}
+            >
+              Confirm Sub
+            </Button>
+          </>
+        }
+      >
+        {subTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Sub out <span className="font-semibold text-slate-900">{playerMap.get(subTarget)}</span>.
+              Shift time will be split 50/50 ({splitMinutes} min each).
+            </p>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Replacement</label>
+              <div className="space-y-1.5">
+                {bench.map(pid => (
+                  <button
+                    key={pid}
+                    onClick={() => setSelectedReplacement(pid)}
+                    className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                      selectedReplacement === pid
+                        ? 'border-orange-500 bg-orange-50'
+                        : 'border-slate-200 hover:bg-slate-50'
+                    } ${pid === suggestReplacement() && selectedReplacement !== pid ? 'ring-1 ring-orange-200' : ''}`}
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-200 text-xs font-bold text-slate-600">
+                      {playerNumberMap.get(pid)?.toString() ?? '?'}
+                    </div>
+                    <span className="text-sm text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
+                    {pid === suggestReplacement() && (
+                      <span className="ml-auto text-xs text-orange-500">Suggested</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </Dialog>
     </div>
   )
 }
