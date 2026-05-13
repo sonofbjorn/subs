@@ -128,3 +128,38 @@ export async function startGame(gameId: string): Promise<void> {
     await db.segments.update(segments[0].id, { status: 'IN_PROGRESS' })
   }
 }
+
+export async function completeSegment(gameId: string, segmentId: string): Promise<void> {
+  await db.segments.update(segmentId, { status: 'COMPLETED' })
+
+  const segments = await db.segments
+    .where('gameId')
+    .equals(gameId)
+    .sortBy('number')
+
+  const currentIdx = segments.findIndex(s => s.id === segmentId)
+  const nextSegment = currentIdx >= 0 && currentIdx < segments.length - 1 ? segments[currentIdx + 1] : null
+
+  if (nextSegment) {
+    await db.segments.update(nextSegment.id, { status: 'IN_PROGRESS' })
+  } else {
+    await db.games.update(gameId, { status: 'COMPLETED' })
+  }
+}
+
+export async function uncompleteSegment(gameId: string, segmentId: string): Promise<void> {
+  await db.segments.update(segmentId, { status: 'IN_PROGRESS' })
+
+  const segments = await db.segments
+    .where('gameId')
+    .equals(gameId)
+    .sortBy('number')
+
+  const currentIdx = segments.findIndex(s => s.id === segmentId)
+  if (currentIdx < segments.length - 1) {
+    const nextSegment = segments[currentIdx + 1]
+    await db.segments.update(nextSegment.id, { status: 'PENDING' })
+  }
+
+  await db.games.update(gameId, { status: 'ACTIVE' })
+}
