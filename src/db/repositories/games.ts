@@ -266,3 +266,87 @@ export async function injurySub(
     }
   }
 }
+
+export async function updateActiveRoster(
+  gameId: string,
+  newActivePlayerIds: string[],
+): Promise<void> {
+  const game = await db.games.get(gameId)
+  if (!game) return
+
+  await db.games.update(gameId, { activePlayerIds: newActivePlayerIds })
+
+  const segments = await db.segments.where('gameId').equals(gameId).sortBy('number')
+  const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
+  const allSplits = await db.shiftSplits.toArray()
+
+  const completedSegmentIds = segments.filter(s => s.status === 'COMPLETED').map(s => s.id)
+  const currentSegIdx = segments.findIndex(s => s.status === 'IN_PROGRESS')
+
+  if (currentSegIdx < 0) return
+
+  // Calculate existing playtime from completed segment shifts
+  const existingPlaytime = new Map<string, number>()
+  for (const s of allShifts) {
+    if (!completedSegmentIds.includes(s.segmentId)) continue
+    const lineup: string[] = JSON.parse(s.lineupJson)
+    const dur = s.endMinute - s.startMinute
+    for (const pid of lineup) {
+      existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
+    }
+  }
+
+  // Handle splits in completed segments
+  for (const split of allSplits) {
+    const shift = allShifts.find(s => s.id === split.shiftId)
+    if (!shift || !completedSegmentIds.includes(shift.segmentId)) continue
+    const lineup: string[] = JSON.parse(shift.lineupJson)
+    const dur = shift.endMinute - shift.startMinute
+    for (const pid of lineup) {
+      const existing = existingPlaytime.get(pid) ?? 0
+      if (pid === split.playerOutId) {
+        existingPlaytime.set(pid, existing - dur + split.minute)
+      } else if (pid === split.playerInId) {
+        existingPlaytime.set(pid, existing + (dur - split.minute))
+      }
+    }
+  }
+
+  for (const pid of newActivePlayerIds) {
+    if (!existingPlaytime.has(pid)) existingPlaytime.set(pid, 0)
+  }
+
+  // Recalculate from current segment onward
+  for (let si = currentSegIdx; si < segments.length; si++) {
+    const segShifts = allShifts
+      .filter(s => s.segmentId === segments[si].id)
+      .sort((a, b) => a.startMinute - b.startMinute)
+
+    if (segShifts.length === 0) continue
+
+    const totalDuration = segShifts.reduce((sum, s) => sum + (s.endMinute - s.startMinute), 0)
+
+    const lineupResults = generateLineups(
+      newActivePlayerIds,
+      1,
+      totalDuration,
+      game.substitutionIntervalMinutes,
+      existingPlaytime,
+    )
+
+    for (const lineupSeg of lineupResults) {
+      for (const shiftRes of lineupSeg.shifts) {
+        for (const pid of shiftRes.lineup) {
+          existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + shiftRes.shiftDuration)
+        }
+      }
+    }
+
+    for (let i = 0; i < segShifts.length && i < (lineupResults[0]?.shifts.length ?? 0); i++) {
+      const shiftRes = lineupResults[0].shifts[i]
+      await db.shifts.update(segShifts[i].id, {
+        lineupJson: JSON.stringify(shiftRes.lineup),
+      })
+    }
+  }
+}

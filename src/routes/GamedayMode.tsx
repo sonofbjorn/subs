@@ -229,7 +229,12 @@ export default function GamedayMode() {
           </div>
 
           <div className="mt-4">
-            <Button variant="secondary" className="w-full">
+            <Button variant="secondary" className="w-full" onClick={() => {
+              if (!gameId) return
+              navigate(`/teams/${teamId}/game-setup/select`, {
+                state: { editGameId: gameId },
+              })
+            }}>
               <Activity className="mr-1.5 h-4 w-4" />
               Edit Gameday Roster
             </Button>
