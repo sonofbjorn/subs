@@ -81,8 +81,9 @@ export default function LineupDisplay() {
   const totalMinutes = segments.length * game.durationMinutes
 
   async function handleStartGame() {
-    if (!gameId) return
+    if (!gameId || !teamId) return
     await startGame(gameId)
+    navigate(`/teams/${teamId}/gameday/${gameId}`)
   }
 
   async function handleReshuffle() {
