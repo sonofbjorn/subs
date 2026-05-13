@@ -140,7 +140,7 @@ export default function ActivePlayerSelect() {
 
   const config = state as SetupLocationState
   const title = isEdit ? 'Edit Gameday Roster' : 'Active Players'
-  const subtitle = isEdit ? `${team.name}` : `${team.name} &middot; ${config.gameName ?? ''}`
+  const subtitle = isEdit ? `${team.name}` : `${team.name} · ${config.gameName ?? ''}`
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-8">

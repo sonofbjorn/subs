@@ -100,7 +100,7 @@ export default function LineupDisplay() {
         </Button>
         <h1 className="text-2xl font-bold text-slate-900">{game.name}</h1>
         <p className="mt-1 text-sm text-slate-500">
-          {game.structure === 'HALVES' ? '2 Halves' : '4 Quarters'} &middot; {totalMinutes} min total &middot;
+          {game.structure === 'HALVES' ? '2 Halves' : '4 Quarters'} · {totalMinutes} min total ·
           {game.activePlayerIds.length} players
           <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
             game.status === 'DRAFT' ? 'bg-amber-100 text-amber-700' :
@@ -150,7 +150,7 @@ export default function LineupDisplay() {
                   <tr key={shift.id} className="border-b border-slate-100 last:border-0">
                     <td className="px-4 py-3 font-medium text-slate-700">{i + 1}</td>
                     <td className="px-4 py-3 text-slate-500">
-                      {shift.startMinute}&ndash;{shift.endMinute} min
+                      {shift.startMinute}–{shift.endMinute} min
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1.5">

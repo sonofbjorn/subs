@@ -171,7 +171,7 @@ export default function GameSetup() {
           <div className="space-y-1 text-sm text-slate-600">
             <p>{segmentCount} {segmentLabel}{segmentCount > 1 ? 's' : ''} × {duration} min = {totalMinutes} min total</p>
             <p>~{shiftsPerSegment} shifts per {segmentLabel} ({interval} min each)</p>
-            <p>Max {maxConsecutive} consecutive shifts &middot; {activePlayerCount} active player{activePlayerCount !== 1 ? 's' : ''} on roster</p>
+            <p>Max {maxConsecutive} consecutive shifts · {activePlayerCount} active player{activePlayerCount !== 1 ? 's' : ''} on roster</p>
           </div>
           {notEnoughPlayers && (
             <p className="flex items-center gap-1.5 text-sm text-red-500">

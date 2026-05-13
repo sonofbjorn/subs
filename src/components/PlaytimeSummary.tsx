@@ -22,7 +22,7 @@ export default function PlaytimeSummary({ playerNames, playtime, totalMinutes, s
             <div key={name}>
               <div className="mb-1 flex items-center justify-between text-sm">
                 <span className="font-medium text-slate-900">{name}</span>
-                <span className="text-slate-500">{minutes} min ({pct}%) &middot; {shifts} shifts</span>
+                <span className="text-slate-500">{minutes} min ({pct}%) · {shifts} shifts</span>
               </div>
               <div className="h-2.5 rounded-full bg-slate-100">
                 <div

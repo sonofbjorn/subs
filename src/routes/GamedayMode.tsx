@@ -145,7 +145,7 @@ export default function GamedayMode() {
           Gameplan
         </Button>
         <h1 className="text-2xl font-bold text-slate-900">{game.name}</h1>
-        <p className="mt-1 text-sm text-slate-500">{team.name} &middot; Gameday Mode</p>
+        <p className="mt-1 text-sm text-slate-500">{team.name} · Gameday Mode</p>
       </header>
 
       {allDone ? (
@@ -176,7 +176,7 @@ export default function GamedayMode() {
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                {currentShift.startMinute}&ndash;{currentShift.endMinute} min
+                {currentShift.startMinute}–{currentShift.endMinute} min
                 {currentShiftSplits.length > 0 && <span className="ml-2 text-orange-500">(substitution occurred)</span>}
               </p>
             </div>
@@ -207,7 +207,7 @@ export default function GamedayMode() {
                     <p className={`text-xs font-medium ${
                       isCurrent ? 'text-green-700' : isCompleted ? 'text-slate-400' : 'text-slate-500'
                     }`}>
-                      Shift {i + 1} &middot; {shift.startMinute}&ndash;{shift.endMinute} min
+                      Shift {i + 1} · {shift.startMinute}–{shift.endMinute} min
                       {shiftHasSub && !isCompleted && <span className="ml-1.5 text-blue-500">(sub)</span>}
                     </p>
                     {isCompleted && <CheckCircle className="h-3.5 w-3.5 text-slate-400" />}
