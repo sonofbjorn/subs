@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { Plus, ChevronDown, ChevronRight, ArrowLeft, Archive, RotateCcw, Pencil } from 'lucide-react'
+import { Plus, ChevronDown, ChevronRight, ArrowLeft, Archive, RotateCcw, Pencil, Play } from 'lucide-react'
 import type { Player } from '../types'
 import { db } from '../db/schema'
 import { addPlayer, updatePlayer, archivePlayer, unarchivePlayer, isDuplicateName } from '../db/repositories/players'
@@ -102,10 +102,16 @@ export default function RosterList() {
         </Button>
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-slate-900">{team.name}</h1>
-          <Button onClick={openAdd}>
-            <Plus className="mr-1.5 h-4 w-4" />
-            Add Player
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => navigate(`/teams/${teamId}/game-setup`)}>
+              <Play className="mr-1.5 h-4 w-4" />
+              New Game
+            </Button>
+            <Button onClick={openAdd}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              Add Player
+            </Button>
+          </div>
         </div>
       </header>
 
