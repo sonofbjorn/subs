@@ -39,6 +39,7 @@ export interface Segment {
 
 export interface Shift {
   id: string
+  gameId: string
   segmentId: string
   startMinute: number
   endMinute: number

@@ -59,6 +59,7 @@ export async function createGame(input: CreateGameInput): Promise<string> {
     for (const shiftResult of lineupSeg.shifts) {
       allShifts.push({
         id: crypto.randomUUID(),
+        gameId,
         segmentId: segment.id,
         startMinute: minute,
         endMinute: minute + shiftResult.shiftDuration,
@@ -102,6 +103,7 @@ export async function recalculateLineups(gameId: string): Promise<void> {
     for (const shiftResult of lineupSeg.shifts) {
       allShifts.push({
         id: crypto.randomUUID(),
+        gameId,
         segmentId: segment.id,
         startMinute: minute,
         endMinute: minute + shiftResult.shiftDuration,
@@ -114,4 +116,15 @@ export async function recalculateLineups(gameId: string): Promise<void> {
   const existingSegmentIds = segments.map(s => s.id)
   await db.shifts.where('segmentId').anyOf(existingSegmentIds).delete()
   await db.shifts.bulkAdd(allShifts)
+}
+
+export async function startGame(gameId: string): Promise<void> {
+  await db.games.update(gameId, { status: 'ACTIVE' })
+  const segments = await db.segments
+    .where('gameId')
+    .equals(gameId)
+    .sortBy('number')
+  if (segments.length > 0) {
+    await db.segments.update(segments[0].id, { status: 'IN_PROGRESS' })
+  }
 }

@@ -17,7 +17,7 @@ export class SubsDB extends Dexie {
       players: '&id, teamId, name, number, isArchived',
       games: '&id, teamId, name, status, createdAt',
       segments: '&id, gameId, number, status',
-      shifts: '&id, segmentId, startMinute, endMinute',
+      shifts: '&id, gameId, segmentId, startMinute, endMinute',
       shiftSplits: '&id, shiftId, minute, playerOutId, playerInId',
       plannedPlaytimes: '&id, gameId, playerId, plannedMinutes',
     })
