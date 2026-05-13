@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity, ChevronRight, Cross } from 'lucide-react'
+import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity, ChevronRight, Cross, Ambulance } from 'lucide-react'
 import type { Player, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { advanceShift, uncompleteShift, injurySub } from '../db/repositories/games'
@@ -27,10 +27,9 @@ export default function GamedayMode() {
     if (!teamId) return Promise.resolve([] as Player[])
     return db.players.where('teamId').equals(teamId).toArray()
   }, [teamId])
-  const shiftSplits = useLiveQuery(() => {
-    return db.shiftSplits.toArray()
-  })
+  const shiftSplits = useLiveQuery(() => db.shiftSplits.toArray())
 
+  const [showSubModal, setShowSubModal] = useState(false)
   const [subTarget, setSubTarget] = useState<string | null>(null)
   const [selectedReplacement, setSelectedReplacement] = useState<string | null>(null)
 
@@ -66,18 +65,13 @@ export default function GamedayMode() {
   const completedShiftCount = segmentShifts.filter(s => s.status === 'COMPLETED').length
   const hasCompletedShifts = shifts.some(s => s.status === 'COMPLETED')
 
-  // Determine effective on-court lineup (accounting for ShiftSplits/substitutions)
   const currentShiftSplits = currentShift
     ? shiftSplits.filter(sp => sp.shiftId === currentShift.id)
     : []
   const subInIds = new Set(currentShiftSplits.map(sp => sp.playerInId))
 
-  const rawOnCourt: string[] = currentShift ? JSON.parse(currentShift.lineupJson) : []
-  const effectiveOnCourt = currentShiftSplits.length > 0
-    ? rawOnCourt  // lineupJson already reflects the sub (updated by injurySub)
-    : rawOnCourt
-
-  const onCourtSet = new Set(effectiveOnCourt)
+  const onCourt: string[] = currentShift ? JSON.parse(currentShift.lineupJson) : []
+  const onCourtSet = new Set(onCourt)
   const injuredSet = new Set(game!.injuredPlayerIds ?? [])
   const bench = currentShift
     ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid))
@@ -87,6 +81,10 @@ export default function GamedayMode() {
   const splitMinutes = currentShift
     ? Math.floor((currentShift.startMinute + currentShift.endMinute) / 2)
     : 0
+
+  const subCandidates = currentShift
+    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid) && !injuredSet.has(pid))
+    : []
 
   function getPlaytimeTotals(): Map<string, number> {
     const pt = new Map<string, number>()
@@ -103,10 +101,9 @@ export default function GamedayMode() {
 
   function suggestReplacement(): string {
     const playtime = getPlaytimeTotals()
-    const candidates = game!.activePlayerIds.filter(pid => !onCourtSet.has(pid) && !injuredSet.has(pid))
-    let lowest = candidates[0]
+    let lowest = subCandidates[0]
     let lowestTime = Infinity
-    for (const pid of candidates) {
+    for (const pid of subCandidates) {
       const t = playtime.get(pid) ?? 0
       if (t < lowestTime) {
         lowestTime = t
@@ -116,14 +113,16 @@ export default function GamedayMode() {
     return lowest
   }
 
-  function openSubDialog(playerId: string) {
-    setSubTarget(playerId)
+  function openSubModal() {
+    setSubTarget(null)
     setSelectedReplacement(suggestReplacement())
+    setShowSubModal(true)
   }
 
   async function handleSubConfirm() {
     if (!subTarget || !selectedReplacement || !currentShift || !gameId) return
     await injurySub(gameId, currentShift.id, subTarget, selectedReplacement)
+    setShowSubModal(false)
     setSubTarget(null)
     setSelectedReplacement(null)
   }
@@ -137,10 +136,6 @@ export default function GamedayMode() {
     if (!gameId) return
     await uncompleteShift(gameId)
   }
-
-  const subDialogCandidates = currentShift
-    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid) && !injuredSet.has(pid))
-    : []
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-8">
@@ -190,30 +185,79 @@ export default function GamedayMode() {
             </span>
           </div>
 
-          <Card className="mb-4">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700">On Court</h3>
-            <div className="space-y-2">
-              {effectiveOnCourt.map(pid => (
-                <button
-                  key={pid}
-                  onClick={() => openSubDialog(pid)}
-                  className="flex w-full items-center gap-3 rounded-lg bg-orange-50 px-4 py-3 text-left transition-colors hover:bg-orange-100"
+          {/* Shift Timeline — moved above bench */}
+          <div className="mb-4 space-y-1.5">
+            {segmentShifts.map((shift, i) => {
+              const lineup: string[] = JSON.parse(shift.lineupJson)
+              const isCurrent = shift.id === currentShift.id
+              const isCompleted = shift.status === 'COMPLETED'
+              const shiftHasSub = shiftSplits.some(sp => sp.shiftId === shift.id)
+              return (
+                <div
+                  key={shift.id}
+                  className={`rounded-lg border px-4 py-3 transition-colors ${
+                    isCurrent
+                      ? 'border-green-300 bg-green-50'
+                      : isCompleted
+                        ? 'border-slate-200 bg-slate-50'
+                        : 'border-slate-200'
+                  }`}
                 >
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500 text-sm font-bold text-white">
-                    {playerNumberMap.get(pid)?.toString() ?? '?'}
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <p className={`text-xs font-medium ${
+                      isCurrent ? 'text-green-700' : isCompleted ? 'text-slate-400' : 'text-slate-500'
+                    }`}>
+                      Shift {i + 1} &middot; {shift.startMinute}&ndash;{shift.endMinute} min
+                      {shiftHasSub && !isCompleted && <span className="ml-1.5 text-blue-500">(sub)</span>}
+                    </p>
+                    {isCompleted && <CheckCircle className="h-3.5 w-3.5 text-slate-400" />}
+                    {isCurrent && <ChevronRight className="h-3.5 w-3.5 text-green-600" />}
                   </div>
-                  <span className="flex-1 font-medium text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
-                  {subInIds.has(pid) && (
-                    <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
-                      Sub
-                    </span>
-                  )}
-                  <span className="text-xs text-orange-500">Sub Out</span>
-                </button>
-              ))}
-            </div>
-          </Card>
+                  <div className="flex flex-wrap gap-1.5">
+                    {lineup.map(pid => {
+                      const isSub = shiftHasSub && shiftSplits
+                        .filter(sp => sp.shiftId === shift.id)
+                        .some(sp => sp.playerInId === pid)
+                      return (
+                        <span
+                          key={pid}
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium shadow-sm ${
+                            isCurrent
+                              ? 'bg-white text-green-800'
+                              : isCompleted
+                                ? 'bg-white text-slate-400'
+                                : 'bg-white text-slate-600'
+                          }`}
+                        >
+                          {playerMap.get(pid) ?? 'Unknown'}
+                          {isSub && <span className="text-blue-500">(sub)</span>}
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
 
+          {/* Emergency Sub + Edit Roster buttons */}
+          <div className="mb-4 flex gap-2">
+            <Button variant="secondary" className="flex-1" onClick={openSubModal}>
+              <Ambulance className="mr-1.5 h-4 w-4" />
+              Emergency Sub
+            </Button>
+            <Button variant="secondary" className="flex-1" onClick={() => {
+              if (!gameId) return
+              navigate(`/teams/${teamId}/game-setup/select`, {
+                state: { editGameId: gameId },
+              })
+            }}>
+              <Activity className="mr-1.5 h-4 w-4" />
+              Edit Roster
+            </Button>
+          </div>
+
+          {/* Bench */}
           <Card className="mb-4">
             <h3 className="mb-3 text-sm font-semibold text-slate-700">Bench</h3>
             {bench.length === 0 ? (
@@ -232,6 +276,7 @@ export default function GamedayMode() {
             )}
           </Card>
 
+          {/* Injured section */}
           {injuredPlayers.length > 0 && (
             <Card className="mb-4 border-red-200 bg-red-50">
               <h3 className="mb-3 text-sm font-semibold text-red-700">Injured</h3>
@@ -249,71 +294,8 @@ export default function GamedayMode() {
             </Card>
           )}
 
-          <div className="space-y-1.5">
-            {segmentShifts.map((shift, i) => {
-              const lineup: string[] = JSON.parse(shift.lineupJson)
-              const isCurrent = shift.id === currentShift.id
-              const isCompleted = shift.status === 'COMPLETED'
-              const shiftHasSub = shiftSplits.some(sp => sp.shiftId === shift.id)
-              return (
-                <div
-                  key={shift.id}
-                  className={`rounded-lg border px-4 py-3 transition-colors ${
-                    isCurrent
-                      ? 'border-orange-300 bg-orange-50'
-                      : isCompleted
-                        ? 'border-green-200 bg-green-50'
-                        : 'border-slate-200'
-                  }`}
-                >
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <p className="text-xs font-medium text-slate-500">
-                      Shift {i + 1} &middot; {shift.startMinute}&ndash;{shift.endMinute} min
-                      {shiftHasSub && <span className="ml-1.5 text-blue-500">(sub)</span>}
-                    </p>
-                    {isCompleted && <CheckCircle className="h-3.5 w-3.5 text-green-500" />}
-                    {isCurrent && <ChevronRight className="h-3.5 w-3.5 text-orange-500" />}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {lineup.map(pid => {
-                      const isSub = shiftHasSub && shiftSplits
-                        .filter(sp => sp.shiftId === shift.id)
-                        .some(sp => sp.playerInId === pid)
-                      return (
-                        <span
-                          key={pid}
-                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium shadow-sm ${
-                            isCurrent
-                              ? 'bg-white text-slate-700'
-                              : isCompleted
-                                ? 'bg-green-100 text-green-700'
-                                : 'bg-white text-slate-400'
-                          }`}
-                        >
-                          {playerMap.get(pid) ?? 'Unknown'}
-                          {isSub && <span className="text-blue-500">(sub)</span>}
-                        </span>
-                      )
-                    })}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-
-          <div className="mt-4">
-            <Button variant="secondary" className="w-full" onClick={() => {
-              if (!gameId) return
-              navigate(`/teams/${teamId}/game-setup/select`, {
-                state: { editGameId: gameId },
-              })
-            }}>
-              <Activity className="mr-1.5 h-4 w-4" />
-              Edit Gameday Roster
-            </Button>
-          </div>
-
-          <div className="mt-3 flex flex-col gap-3">
+          {/* Action buttons */}
+          <div className="mt-2 flex flex-col gap-3">
             <Button onClick={handleCompleteShift} size="lg" className="w-full">
               <CheckCircle className="mr-1.5 h-5 w-5" />
               Complete Shift {completedShiftCount + 1}
@@ -343,33 +325,61 @@ export default function GamedayMode() {
         </Card>
       )}
 
+      {/* Emergency Sub Modal */}
       <Dialog
-        open={subTarget !== null}
-        onClose={() => setSubTarget(null)}
-        title="Injury Substitution"
+        open={showSubModal}
+        onClose={() => { setShowSubModal(false); setSubTarget(null); setSelectedReplacement(null) }}
+        title="Emergency Substitution"
         actions={
           <>
-            <Button variant="secondary" onClick={() => setSubTarget(null)}>Cancel</Button>
-            <Button onClick={handleSubConfirm} disabled={!selectedReplacement}>Confirm Sub</Button>
+            <Button variant="secondary" onClick={() => { setShowSubModal(false); setSubTarget(null); setSelectedReplacement(null) }}>Cancel</Button>
+            <Button onClick={handleSubConfirm} disabled={!subTarget || !selectedReplacement}>Confirm Sub</Button>
           </>
         }
       >
-        {subTarget && (
-          <div className="space-y-4">
-            <p className="text-sm text-slate-600">
-              Sub out <span className="font-semibold text-slate-900">{playerMap.get(subTarget)}</span>.
-              Shift time will be split 50/50 ({splitMinutes} min each).
-            </p>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">Replacement</label>
+        <div className="space-y-5">
+          {/* On Court — pick player to sub out */}
+          <div>
+            <h4 className="mb-2 text-sm font-medium text-slate-700">Sub Out</h4>
+            <div className="space-y-1.5">
+              {onCourt.map(pid => (
+                <button
+                  key={pid}
+                  onClick={() => setSubTarget(pid)}
+                  className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                    subTarget === pid
+                      ? 'border-red-400 bg-red-50'
+                      : 'border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white">
+                    {playerNumberMap.get(pid)?.toString() ?? '?'}
+                  </div>
+                  <span className="text-sm font-medium text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
+                  {subInIds.has(pid) && (
+                    <span className="ml-auto inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                      Sub
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Replacement — pick who comes in */}
+          <div>
+            <h4 className="mb-2 text-sm font-medium text-slate-700">Replacement</h4>
+            {subCandidates.length === 0 ? (
+              <p className="text-sm text-slate-400">No available replacements.</p>
+            ) : (
               <div className="space-y-1.5">
-                {subDialogCandidates.map(pid => (
+                {subCandidates.map(pid => (
                   <button
                     key={pid}
                     onClick={() => setSelectedReplacement(pid)}
                     className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                       selectedReplacement === pid
-                        ? 'border-orange-500 bg-orange-50'
+                        ? 'border-orange-400 bg-orange-50'
                         : 'border-slate-200 hover:bg-slate-50'
                     } ${pid === suggestReplacement() && selectedReplacement !== pid ? 'ring-1 ring-orange-200' : ''}`}
                   >
@@ -382,13 +392,16 @@ export default function GamedayMode() {
                     )}
                   </button>
                 ))}
-                {subDialogCandidates.length === 0 && (
-                  <p className="text-sm text-slate-400">No available replacements.</p>
-                )}
               </div>
-            </div>
+            )}
           </div>
-        )}
+
+          {subTarget && selectedReplacement && (
+            <p className="text-sm text-slate-500">
+              Shift time will be split 50/50 ({splitMinutes} min each).
+            </p>
+          )}
+        </div>
       </Dialog>
     </div>
   )
