@@ -89,8 +89,9 @@ export default function ActivePlayerSelect() {
   }
 
   const ids = selectedIds
-  const activePlayers = allPlayers.filter(p => !p.isArchived)
-  const archivedPlayers = allPlayers.filter(p => p.isArchived)
+  const sorted = [...allPlayers].sort((a, b) => a.name.localeCompare(b.name))
+  const activePlayers = sorted.filter(p => !p.isArchived)
+  const archivedPlayers = sorted.filter(p => p.isArchived)
 
   function togglePlayer(id: string) {
     setSelectedIds(prev => {

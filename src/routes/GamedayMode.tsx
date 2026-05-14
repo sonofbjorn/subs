@@ -70,20 +70,22 @@ export default function GamedayMode() {
     : []
   const subInIds = new Set(currentShiftSplits.map(sp => sp.playerInId))
 
-  const onCourt: string[] = currentShift ? JSON.parse(currentShift.lineupJson) : []
+  const byName = (a: string, b: string) => (playerMap.get(a) ?? '').localeCompare(playerMap.get(b) ?? '')
+
+  const onCourt: string[] = currentShift ? (JSON.parse(currentShift.lineupJson) as string[]).sort(byName) : []
   const onCourtSet = new Set(onCourt)
   const injuredSet = new Set(game!.injuredPlayerIds ?? [])
   const bench = currentShift
-    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid))
+    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid)).sort(byName)
     : []
-  const injuredPlayers = [...injuredSet].filter(id => !onCourtSet.has(id))
+  const injuredPlayers = [...injuredSet].filter(id => !onCourtSet.has(id)).sort(byName)
 
   const splitMinutes = currentShift
     ? Math.floor((currentShift.startMinute + currentShift.endMinute) / 2)
     : 0
 
   const subCandidates = currentShift
-    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid) && !injuredSet.has(pid))
+    ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid) && !injuredSet.has(pid)).sort(byName)
     : []
 
   function getPlaytimeTotals(): Map<string, number> {
@@ -214,7 +216,7 @@ export default function GamedayMode() {
                     {isCurrent && <ChevronRight className="h-3.5 w-3.5 text-green-600" />}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {lineup.map(pid => {
+                    {[...lineup].sort(byName).map(pid => {
                       const isSub = shiftHasSub && shiftSplits
                         .filter(sp => sp.shiftId === shift.id)
                         .some(sp => sp.playerInId === pid)

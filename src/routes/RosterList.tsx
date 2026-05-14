@@ -27,8 +27,9 @@ export default function RosterList() {
   const [error, setError] = useState('')
   const [showArchived, setShowArchived] = useState(false)
 
-  const activePlayers = allPlayers?.filter(p => !p.isArchived) ?? []
-  const archivedPlayers = allPlayers?.filter(p => p.isArchived) ?? []
+  const sorted = (allPlayers ?? []).sort((a, b) => a.name.localeCompare(b.name))
+  const activePlayers = sorted.filter(p => !p.isArchived)
+  const archivedPlayers = sorted.filter(p => p.isArchived)
 
   function resetForm() {
     setFormName('')

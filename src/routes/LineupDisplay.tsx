@@ -48,6 +48,7 @@ export default function LineupDisplay() {
   }
 
   const playerMap = new Map(allPlayers.map(p => [p.id, p.name]))
+  const byName = (a: string, b: string) => (playerMap.get(a) ?? '').localeCompare(playerMap.get(b) ?? '')
   const activePlayerNames = game.activePlayerIds.map(id => playerMap.get(id) ?? 'Unknown').sort()
 
   const currentSegment = segments[selectedSegment]
@@ -154,7 +155,7 @@ export default function LineupDisplay() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1.5">
-                        {lineup.map(pid => (
+                        {[...lineup].sort(byName).map(pid => (
                           <span
                             key={pid}
                             className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-medium text-orange-700"
