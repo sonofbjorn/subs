@@ -4,9 +4,21 @@ interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<{ outcome: 'accepted' | 'dismissed' }>
 }
 
+function detectIOS(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent
+  return /iPhone|iPad|iPod/.test(ua)
+}
+
+function detectStandalone(): boolean {
+  return 'standalone' in navigator && (navigator as Navigator & { standalone?: boolean }).standalone === true
+}
+
 export function usePwaInstall() {
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null)
   const [canInstall, setCanInstall] = useState(false)
+  const isIOS = detectIOS()
+  const isStandalone = detectStandalone()
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -39,5 +51,5 @@ export function usePwaInstall() {
     setCanInstall(false)
   }, [])
 
-  return { canInstall, install, dismiss }
+  return { canInstall, install, dismiss, isIOS, isStandalone }
 }
