@@ -182,6 +182,48 @@ describe('calculatePlaytime', () => {
   })
 })
 
+describe('mid-game roster changes', () => {
+  it('keeps full-game players within 1 shift when a player returns from injury', () => {
+    // 8 players, 4Q × 10 min, 5 min intervals = 8 shifts total
+    // Injury: player 'h' subbed out after Q1 (shifts 1-2)
+    // Return: 'h' comes back after Q2 shift 1
+    const allPlayers = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+
+    let pt = new Map<string, number>()
+
+    // Phase 1: Q1 (2 shifts) with all 8
+    const q1 = generateLineups(allPlayers, 1, 10, 5)
+    for (const shift of q1[0].shifts) {
+      for (const pid of shift.lineup) {
+        pt.set(pid, (pt.get(pid) ?? 0) + shift.shiftDuration)
+      }
+    }
+
+    // Injury: 'h' removed from active roster for Q2 shift 1
+    const afterInjury = allPlayers.filter(p => p !== 'h')
+    const q2s1 = generateLineups(afterInjury, 1, 5, 5, pt)
+    for (const shift of q2s1[0].shifts) {
+      for (const pid of shift.lineup) {
+        pt.set(pid, (pt.get(pid) ?? 0) + shift.shiftDuration)
+      }
+    }
+
+    // Return: 'h' comes back for Q2 shift 2 + Q3 + Q4 (25 min = 5 shifts)
+    const remaining = generateLineups(allPlayers, 1, 25, 5, pt)
+    for (const shift of remaining[0].shifts) {
+      for (const pid of shift.lineup) {
+        pt.set(pid, (pt.get(pid) ?? 0) + shift.shiftDuration)
+      }
+    }
+
+    // Full-game players (a-g) should be within ±1 shift of each other
+    const fullGame = allPlayers.filter(p => p !== 'h')
+    const fullTimes = fullGame.map(p => pt.get(p) ?? 0)
+    const fullDiff = Math.max(...fullTimes) - Math.min(...fullTimes)
+    expect(fullDiff).toBeLessThanOrEqual(5)
+  })
+})
+
 describe('edge cases', () => {
   it('handles empty active player list', () => {
     const result = generateLineups([], 1, 10, 5)
