@@ -30,11 +30,18 @@ function pickLineup(
   shiftDuration: number,
   maxConsecutiveShifts: number,
 ): string[] {
-  // Sort by total playtime ascending (players behind get priority)
+  // Sort: rested players first (lastShiftPlayed=false), then by playtime ascending.
+  // This ensures a player who sat out last shift always gets priority, so no one
+  // sits two shifts in a row unless there are more than 10 players.
   const sorted = [...activePlayerIds].sort((a, b) => {
-    const ta = timeline.get(a)!.totalPlaytime
-    const tb = timeline.get(b)!.totalPlaytime
-    if (ta !== tb) return ta - tb
+    const ta = timeline.get(a)!
+    const tb = timeline.get(b)!
+    if (ta.lastShiftPlayed !== tb.lastShiftPlayed) {
+      return ta.lastShiftPlayed ? 1 : -1
+    }
+    if (ta.totalPlaytime !== tb.totalPlaytime) {
+      return ta.totalPlaytime - tb.totalPlaytime
+    }
     return a < b ? -1 : 1
   })
 

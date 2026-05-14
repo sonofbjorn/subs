@@ -182,6 +182,57 @@ describe('calculatePlaytime', () => {
   })
 })
 
+describe('consecutive bench avoidance', () => {
+  it('never lets a player sit two shifts in a row with 8 players', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+    const result = generateLineups(players, 4, 10, 5)
+
+    const consecBench = new Map(players.map(p => [p, 0]))
+    let violations = 0
+
+    for (const seg of result) {
+      for (const shift of seg.shifts) {
+        for (const p of players) {
+          if (shift.lineup.includes(p)) {
+            consecBench.set(p, 0)
+          } else {
+            const count = (consecBench.get(p) ?? 0) + 1
+            consecBench.set(p, count)
+            if (count >= 2) violations++
+          }
+        }
+      }
+    }
+
+    expect(violations).toBe(0)
+  })
+
+  it('allows consecutive bench with 11+ players', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k')
+    const result = generateLineups(players, 2, 10, 5)
+
+    // With 11 players and 5 per shift, 6 sit per shift — must happen
+    const consecBench = new Map(players.map(p => [p, 0]))
+    let violations = 0
+
+    for (const seg of result) {
+      for (const shift of seg.shifts) {
+        for (const p of players) {
+          if (shift.lineup.includes(p)) {
+            consecBench.set(p, 0)
+          } else {
+            const count = (consecBench.get(p) ?? 0) + 1
+            consecBench.set(p, count)
+            if (count >= 2) violations++
+          }
+        }
+      }
+    }
+
+    expect(violations).toBeGreaterThan(0)
+  })
+})
+
 describe('mid-game roster changes', () => {
   it('keeps full-game players within 1 shift when a player returns from injury', () => {
     // 8 players, 4Q × 10 min, 5 min intervals = 8 shifts total
