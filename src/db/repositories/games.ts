@@ -1,6 +1,6 @@
 import { db } from '../schema'
 import type { GameStructure, Game, Shift } from '../../types'
-import { generateLineups } from '../../algorithm/lineup'
+import { generateLineups, computeTimelineState } from '../../algorithm/lineup'
 
 interface CreateGameInput {
   teamId: string
@@ -326,6 +326,24 @@ export async function injurySub(
   if (allToReplace.length === 0) return
 
   const totalDuration = allToReplace.reduce((sum, s) => sum + s.duration, 0)
+
+  // Build timeline state from completed + current shift so consecutive tracking is preserved
+  const shiftsChronological = [...allShifts].sort((a, b) => {
+    const siA = segments.findIndex(s => s.id === a.segmentId)
+    const siB = segments.findIndex(s => s.id === b.segmentId)
+    if (siA !== siB) return siA - siB
+    return a.startMinute - b.startMinute
+  })
+  const stateLineups: string[][] = []
+  for (const s of shiftsChronological) {
+    if (s.id === shiftId) {
+      stateLineups.push(currentLineup)
+    } else if (completedShiftIdSet.has(s.id)) {
+      stateLineups.push(JSON.parse(s.lineupJson))
+    }
+  }
+  const existingState = computeTimelineState(newActive, stateLineups)
+
   const lineupResults = generateLineups(
     newActive,
     1,
@@ -333,6 +351,7 @@ export async function injurySub(
     game.substitutionIntervalMinutes,
     existingPlaytime,
     game.maxConsecutiveShifts ?? 2,
+    existingState,
   )
 
   for (const shiftRes of lineupResults[0]?.shifts ?? []) {
@@ -426,6 +445,23 @@ export async function updateActiveRoster(
 
   const totalDuration = allToReplace.reduce((sum, s) => sum + s.duration, 0)
 
+  // Build timeline state from completed + current shift so consecutive tracking is preserved
+  const shiftsChronological = [...allShifts].sort((a, b) => {
+    const siA = segments.findIndex(s => s.id === a.segmentId)
+    const siB = segments.findIndex(s => s.id === b.segmentId)
+    if (siA !== siB) return siA - siB
+    return a.startMinute - b.startMinute
+  })
+  const stateLineups: string[][] = []
+  for (const s of shiftsChronological) {
+    if (s.id === currentShift?.id) {
+      stateLineups.push(JSON.parse(s.lineupJson))
+    } else if (completedShiftIds.has(s.id)) {
+      stateLineups.push(JSON.parse(s.lineupJson))
+    }
+  }
+  const existingState = computeTimelineState(newActivePlayerIds, stateLineups)
+
   const lineupResults = generateLineups(
     newActivePlayerIds,
     1,
@@ -433,6 +469,7 @@ export async function updateActiveRoster(
     game.substitutionIntervalMinutes,
     existingPlaytime,
     game.maxConsecutiveShifts ?? 2,
+    existingState,
   )
 
   for (const shiftRes of lineupResults[0]?.shifts ?? []) {

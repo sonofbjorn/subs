@@ -275,6 +275,95 @@ describe('mid-game roster changes', () => {
   })
 })
 
+describe('existingTimelineState', () => {
+  it('gives rested players priority when passed in as existingTimelineState', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+    const pt = new Map(players.map(p => [p, 5]))
+    const state = new Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>()
+    for (const p of ['a', 'b', 'c', 'd', 'e']) {
+      state.set(p, { consecutivePlayed: 1, lastShiftPlayed: true })
+    }
+    for (const p of ['f', 'g', 'h']) {
+      state.set(p, { consecutivePlayed: 0, lastShiftPlayed: false })
+    }
+
+    const result = generateLineups(players, 1, 5, 5, pt, 2, state)
+    const lineup = result[0].shifts[0].lineup
+
+    expect(lineup).toContain('f')
+    expect(lineup).toContain('g')
+    expect(lineup).toContain('h')
+  })
+
+  it('enforces maxConsecutiveShifts from existingTimelineState', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+    const pt = new Map(players.map(p => [p, 5]))
+    const state = new Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>()
+    state.set('a', { consecutivePlayed: 2, lastShiftPlayed: true })
+    for (const p of players.filter(p => p !== 'a')) {
+      state.set(p, { consecutivePlayed: 0, lastShiftPlayed: false })
+    }
+
+    const result = generateLineups(players, 1, 5, 5, pt, 2, state)
+    const lineup = result[0].shifts[0].lineup
+
+    expect(lineup).not.toContain('a')
+  })
+
+  it('still allows exceeding limit when too few players are available', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f')
+    const pt = new Map(players.map(p => [p, 5]))
+    const state = new Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>()
+    state.set('a', { consecutivePlayed: 2, lastShiftPlayed: true })
+    state.set('b', { consecutivePlayed: 2, lastShiftPlayed: true })
+    for (const p of players.filter(p => p !== 'a' && p !== 'b')) {
+      state.set(p, { consecutivePlayed: 0, lastShiftPlayed: false })
+    }
+
+    const result = generateLineups(players, 1, 5, 5, pt, 2, state)
+    const lineup = result[0].shifts[0].lineup
+
+    // Only 4 non-restricted players (c,d,e,f) — need 5, so one of a or b must play
+    expect(lineup.filter(p => p === 'a' || p === 'b').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('preserves consecutive tracking across multiple shifts with existingTimelineState', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+    const pt = new Map(players.map(p => [p, 5]))
+    const state = new Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>()
+    state.set('a', { consecutivePlayed: 1, lastShiftPlayed: true })
+    for (const p of players.filter(p => p !== 'a')) {
+      state.set(p, { consecutivePlayed: 0, lastShiftPlayed: false })
+    }
+
+    const result = generateLineups(players, 2, 5, 5, pt, 2, state)
+
+    // Track consecutive played across the generated shifts
+    const consecPlayed = new Map<string, number>()
+    for (const [pid] of state) {
+      const s = state.get(pid)!
+      consecPlayed.set(pid, s.consecutivePlayed)
+    }
+    let violations = 0
+    for (const seg of result) {
+      for (const shift of seg.shifts) {
+        for (const pid of shift.lineup) {
+          const count = (consecPlayed.get(pid) ?? 0) + 1
+          consecPlayed.set(pid, count)
+          if (count > 2) violations++
+        }
+        for (const pid of consecPlayed.keys()) {
+          if (!shift.lineup.includes(pid)) {
+            consecPlayed.set(pid, 0)
+          }
+        }
+      }
+    }
+
+    expect(violations).toBe(0)
+  })
+})
+
 describe('edge cases', () => {
   it('handles empty active player list', () => {
     const result = generateLineups([], 1, 10, 5)

@@ -96,15 +96,17 @@ export function generateLineups(
   intervalMinutes: number,
   existingPlaytime?: Map<string, number>,
   maxConsecutiveShifts: number = 2,
+  existingTimelineState?: Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>,
 ): LineupResult[] {
   const timeline = new Map<string, PlayerTimeline>()
 
   for (const id of activePlayerIds) {
+    const state = existingTimelineState?.get(id)
     timeline.set(id, {
       playerId: id,
       totalPlaytime: existingPlaytime?.get(id) ?? 0,
-      consecutivePlayed: 0,
-      lastShiftPlayed: false,
+      consecutivePlayed: state?.consecutivePlayed ?? 0,
+      lastShiftPlayed: state?.lastShiftPlayed ?? false,
     })
   }
 
@@ -137,6 +139,29 @@ export function generateLineups(
   }
 
   return results
+}
+
+export function computeTimelineState(
+  activePlayerIds: string[],
+  completedLineups: string[][],
+): Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }> {
+  const state = new Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>()
+  for (const pid of activePlayerIds) {
+    state.set(pid, { consecutivePlayed: 0, lastShiftPlayed: false })
+  }
+  for (const lineup of completedLineups) {
+    const lineupSet = new Set(lineup)
+    for (const [pid, s] of state) {
+      if (lineupSet.has(pid)) {
+        s.consecutivePlayed++
+        s.lastShiftPlayed = true
+      } else {
+        s.consecutivePlayed = 0
+        s.lastShiftPlayed = false
+      }
+    }
+  }
+  return state
 }
 
 export function calculatePlaytime(
