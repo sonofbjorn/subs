@@ -5,6 +5,7 @@ import GameSetup from './routes/GameSetup'
 import ActivePlayerSelect from './routes/ActivePlayerSelect'
 import LineupDisplay from './routes/LineupDisplay'
 import GamedayMode from './routes/GamedayMode'
+import PwaInstallPrompt from './components/ui/PwaInstallPrompt'
 
 const base = import.meta.env.BASE_URL
 const basename = base === '/' ? '/' : base.replace(/\/$/, '')
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/teams/:teamId/gameday/:gameId" element={<GamedayMode />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <PwaInstallPrompt />
     </BrowserRouter>
   )
 }
