@@ -29,10 +29,13 @@ function pickLineup(
   activePlayerIds: string[],
   shiftDuration: number,
   maxConsecutiveShifts: number,
+  tiebreaker?: Map<string, number>,
 ): string[] {
   // Sort: rested players first (lastShiftPlayed=false), then by playtime ascending.
   // This ensures a player who sat out last shift always gets priority, so no one
   // sits two shifts in a row unless there are more than 10 players.
+  // When playtimes are equal, use tiebreaker order if provided (for randomization),
+  // otherwise fall back to alphabetical by ID.
   const sorted = [...activePlayerIds].sort((a, b) => {
     const ta = timeline.get(a)!
     const tb = timeline.get(b)!
@@ -41,6 +44,9 @@ function pickLineup(
     }
     if (ta.totalPlaytime !== tb.totalPlaytime) {
       return ta.totalPlaytime - tb.totalPlaytime
+    }
+    if (tiebreaker) {
+      return (tiebreaker.get(a) ?? 0) - (tiebreaker.get(b) ?? 0)
     }
     return a < b ? -1 : 1
   })
@@ -110,13 +116,14 @@ export function generateLineups(
     })
   }
 
-  // Randomize initial order when all playtimes are equal (first shift of a fresh game)
-  const initialOrder =
+  // When all playtimes are equal (fresh game or regeneration), shuffle the sort
+  // tiebreaker so every call to generateLineups produces a different schedule.
+  const allEqual =
     activePlayerIds.length > 0 &&
     activePlayerIds.every(id => (existingPlaytime?.get(id) ?? 0) === (existingPlaytime?.get(activePlayerIds[0]) ?? 0))
-      ? shuffle(activePlayerIds)
-      : null
-  let shiftCount = 0
+  const tiebreaker = allEqual
+    ? new Map(shuffle(activePlayerIds).map((id, i) => [id, i]))
+    : undefined
 
   const results: LineupResult[] = []
 
@@ -127,12 +134,10 @@ export function generateLineups(
     while (minute < segmentDurationMinutes) {
       const shiftDuration = Math.min(intervalMinutes, segmentDurationMinutes - minute)
 
-      const order = initialOrder && shiftCount === 0 ? initialOrder : activePlayerIds
-      const lineup = pickLineup(timeline, order, shiftDuration, maxConsecutiveShifts)
+      const lineup = pickLineup(timeline, activePlayerIds, shiftDuration, maxConsecutiveShifts, tiebreaker)
 
       shiftsInSegment.push({ lineup, shiftDuration })
       minute += shiftDuration
-      shiftCount++
     }
 
     results.push({ segmentIndex: seg, shifts: shiftsInSegment })

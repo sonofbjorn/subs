@@ -275,6 +275,30 @@ describe('mid-game roster changes', () => {
   })
 })
 
+describe('regeneration randomization', () => {
+  it('produces different lineups on repeated calls when all playtimes are equal', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+    // Generate 10 schedules and verify at least 8 are unique (accounting for rare collisions)
+    const flats: string[][] = []
+    for (let i = 0; i < 10; i++) {
+      const result = generateLineups(players, 2, 10, 5)
+      flats.push(result.flatMap(s => s.shifts.map(sh => sh.lineup.join(','))))
+    }
+    const uniqueCount = new Set(flats.map(f => f.join('|'))).size
+    expect(uniqueCount).toBeGreaterThanOrEqual(8)
+  })
+
+  it('still produces fair playtime despite randomization', () => {
+    const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
+    for (let i = 0; i < 20; i++) {
+      const result = generateLineups(players, 4, 10, 5)
+      const pt = playtimeTotals(result)
+      const diff = maxMinDiff(pt)
+      expect(diff).toBeLessThanOrEqual(5)
+    }
+  })
+})
+
 describe('existingTimelineState', () => {
   it('gives rested players priority when passed in as existingTimelineState', () => {
     const players = ids('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h')
