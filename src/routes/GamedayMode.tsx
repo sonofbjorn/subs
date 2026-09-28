@@ -84,8 +84,10 @@ export default function GamedayMode() {
     : []
   const injuredPlayers = [...injuredSet].filter(id => !onCourtSet.has(id)).sort(byName)
 
+  // A mid-shift sub splits the shift's *duration* in half for each player — not the
+  // shift's position within the period, which is what this used to show.
   const splitMinutes = currentShift
-    ? Math.floor((currentShift.startMinute + currentShift.endMinute) / 2)
+    ? (currentShift.endMinute - currentShift.startMinute) / 2
     : 0
 
   const subCandidates = currentShift

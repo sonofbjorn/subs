@@ -216,12 +216,7 @@ export default function LineupDisplay() {
               Re-shuffle
             </Button>
             <Button variant="secondary" onClick={() => navigate(`/teams/${teamId}/game-setup/select`, {
-              state: {
-                gameName: game.name,
-                structure: game.structure,
-                duration: game.durationMinutes,
-                interval: game.substitutionIntervalMinutes,
-              },
+              state: { editGameId: gameId },
             })} className="w-full">
               <Pencil className="mr-1.5 h-4 w-4" />
               Edit Gameday Roster

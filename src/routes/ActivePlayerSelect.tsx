@@ -125,15 +125,21 @@ export default function ActivePlayerSelect() {
     navigate(`/teams/${teamId}/lineup/${newGameId}`)
   }
 
+  // Editing a draft returns to the lineup (the game has not started); editing a
+  // live game returns to gameday mode, where the recalculated shifts take effect.
+  const editReturnPath = existingGame?.status === 'DRAFT'
+    ? `/teams/${teamId}/lineup/${gameId}`
+    : `/teams/${teamId}/gameday/${gameId}`
+
   async function handleSaveEdit() {
     if (!gameId || ids.size < 5) return
     await updateActiveRoster(gameId, Array.from(ids))
-    navigate(`/teams/${teamId}/gameday/${gameId}`)
+    navigate(editReturnPath)
   }
 
   function handleBack() {
     if (isEdit) {
-      navigate(`/teams/${teamId}/gameday/${gameId}`)
+      navigate(editReturnPath)
     } else {
       navigate(`/teams/${teamId}/game-setup`)
     }

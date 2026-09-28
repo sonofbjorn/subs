@@ -1,6 +1,7 @@
 import { db } from '../schema'
 import type { GameStructure, Game, Shift } from '../../types'
 import { generateLineups, computeTimelineState } from '../../algorithm/lineup'
+import { shiftPlaytime, splitMinuteFor } from '../../algorithm/playtime'
 
 interface CreateGameInput {
   teamId: string
@@ -246,7 +247,7 @@ export async function injurySub(
   const shift = await db.shifts.get(shiftId)
   if (!game || !shift) return
 
-  const splitMinute = Math.floor((shift.startMinute + shift.endMinute) / 2)
+  const splitMinute = splitMinuteFor(shift.startMinute, shift.endMinute)
 
   // 1. Update game roster: move playerOut to injured, ensure playerIn is active
   const newActive = game.activePlayerIds.filter(id => id !== playerOutId)
@@ -273,28 +274,23 @@ export async function injurySub(
   const allShifts = await db.shifts.where('gameId').equals(gameId).toArray()
   const completedShiftIdSet = new Set(allShifts.filter(s => s.status === 'COMPLETED').map(s => s.id))
 
-  // Calculate playtime from completed shifts + current shift split
+  // Calculate playtime from completed shifts + the current shift (which now
+  // carries the new split). Splits are resolved by `shiftPlaytime`, which reads
+  // the position off each ShiftSplit and splits the shift's duration there.
+  const allSplits = await db.shiftSplits.toArray()
   const existingPlaytime = new Map<string, number>()
-  const shiftDuration = shift.endMinute - shift.startMinute
 
   for (const s of allShifts) {
-    const lineup: string[] = JSON.parse(s.lineupJson)
-    const dur = s.endMinute - s.startMinute
+    const isCurrentShift = s.id === shiftId
+    if (!isCurrentShift && !completedShiftIdSet.has(s.id)) continue
 
-    if (s.id === shiftId) {
-      for (const pid of currentLineup) {
-        if (pid === playerOutId) {
-          existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + splitMinute)
-        } else if (pid === playerInId) {
-          existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + (shiftDuration - splitMinute))
-        } else {
-          existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
-        }
-      }
-    } else if (completedShiftIdSet.has(s.id)) {
-      for (const pid of lineup) {
-        existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
-      }
+    // The current shift's stored lineup is already post-swap (updated in step 2);
+    // `updatedLineup` is used directly rather than re-reading a stale `shift`.
+    const lineup: string[] = isCurrentShift ? updatedLineup : JSON.parse(s.lineupJson)
+    const splits = allSplits.filter(sp => sp.shiftId === s.id)
+
+    for (const [pid, mins] of shiftPlaytime(s.startMinute, s.endMinute, lineup, splits)) {
+      existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + mins)
     }
   }
 
@@ -337,7 +333,10 @@ export async function injurySub(
   const stateLineups: string[][] = []
   for (const s of shiftsChronological) {
     if (s.id === shiftId) {
-      stateLineups.push(currentLineup)
+      // Post-swap: the replacement is on court right now, so it must not be treated
+      // as rested. (The player who went out is no longer in `newActive`, so their
+      // absence here does not affect the timeline.)
+      stateLineups.push(updatedLineup)
     } else if (completedShiftIdSet.has(s.id)) {
       stateLineups.push(JSON.parse(s.lineupJson))
     }
@@ -386,33 +385,28 @@ export async function updateActiveRoster(
     ? segments.findIndex(s => s.id === currentShift.segmentId)
     : -1
 
-  if (currentSegIdx < 0) return
+  if (currentSegIdx < 0) {
+    // No shift has started, so there is no locked-in playtime to preserve and no
+    // "future shifts" to recalculate — the whole plan is still ahead of us. Rebuild
+    // it from scratch against the new roster (design.md 4.4 Scenario B). Anything
+    // else (active game with no current shift) is left alone.
+    if (game.status === 'DRAFT') {
+      await recalculateLineups(gameId)
+    }
+    return
+  }
 
-  // Calculate existing playtime from completed shifts
+  // Calculate existing playtime from completed shifts. `shiftPlaytime` applies any
+  // splits recorded against each shift, so a sub-out player (who is absent from the
+  // post-swap lineup) and a sub-in player are both credited their true share.
   const existingPlaytime = new Map<string, number>()
   for (const s of allShifts) {
     if (!completedShiftIds.has(s.id)) continue
     const lineup: string[] = JSON.parse(s.lineupJson)
-    const dur = s.endMinute - s.startMinute
-    for (const pid of lineup) {
-      existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + dur)
-    }
-  }
+    const splits = allSplits.filter(sp => sp.shiftId === s.id)
 
-  // Handle splits in completed shifts
-  for (const split of allSplits) {
-    if (!completedShiftIds.has(split.shiftId)) continue
-    const shift = allShifts.find(s => s.id === split.shiftId)
-    if (!shift) continue
-    const lineup: string[] = JSON.parse(shift.lineupJson)
-    const dur = shift.endMinute - shift.startMinute
-    for (const pid of lineup) {
-      const existing = existingPlaytime.get(pid) ?? 0
-      if (pid === split.playerOutId) {
-        existingPlaytime.set(pid, existing - dur + split.minute)
-      } else if (pid === split.playerInId) {
-        existingPlaytime.set(pid, existing + (dur - split.minute))
-      }
+    for (const [pid, mins] of shiftPlaytime(s.startMinute, s.endMinute, lineup, splits)) {
+      existingPlaytime.set(pid, (existingPlaytime.get(pid) ?? 0) + mins)
     }
   }
 
