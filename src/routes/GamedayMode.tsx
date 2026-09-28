@@ -32,6 +32,10 @@ export default function GamedayMode() {
   const [showSubModal, setShowSubModal] = useState(false)
   const [subTarget, setSubTarget] = useState<string | null>(null)
   const [selectedReplacement, setSelectedReplacement] = useState<string | null>(null)
+  const [shiftTransition, setShiftTransition] = useState<{
+    leaving: string[]
+    entering: string[]
+  } | null>(null)
 
   if (game === undefined || team === undefined || segments === undefined || shifts === undefined || allPlayers === undefined || shiftSplits === undefined) {
     return (
@@ -130,7 +134,44 @@ export default function GamedayMode() {
   }
 
   async function handleCompleteShift() {
-    if (!gameId) return
+    if (!gameId || !currentShift || !shifts || !segments) return
+
+    // Find next shift before advancing
+    const currentSegShifts = shifts
+      .filter(s => s.segmentId === currentShift.segmentId)
+      .sort((a, b) => a.startMinute - b.startMinute)
+    const currentIdx = currentSegShifts.findIndex(s => s.id === currentShift.id)
+    
+    let nextShift: Shift | undefined
+    if (currentIdx < currentSegShifts.length - 1) {
+      // Next shift in same segment
+      nextShift = currentSegShifts[currentIdx + 1]
+    } else {
+      // First shift in next segment
+      const currentSegNumber = currentSegment?.number ?? 0
+      const nextSeg = segments.find(s => s.number === currentSegNumber + 1)
+      if (nextSeg) {
+        nextShift = shifts
+          .filter(s => s.segmentId === nextSeg.id)
+          .sort((a, b) => a.startMinute - b.startMinute)[0]
+      }
+    }
+
+    // Compute transition data if there's a next shift
+    if (nextShift) {
+      const currentLineup: string[] = JSON.parse(currentShift.lineupJson)
+      const nextLineup: string[] = JSON.parse(nextShift.lineupJson)
+      const nextSet = new Set(nextLineup)
+      const currentSet = new Set(currentLineup)
+      
+      const leaving = currentLineup.filter(pid => !nextSet.has(pid))
+      const entering = nextLineup.filter(pid => !currentSet.has(pid))
+      
+      if (leaving.length > 0 || entering.length > 0) {
+        setShiftTransition({ leaving, entering })
+      }
+    }
+
     await advanceShift(gameId)
   }
 
@@ -402,6 +443,63 @@ export default function GamedayMode() {
             <p className="text-sm text-slate-500">
               Shift time will be split 50/50 ({splitMinutes} min each).
             </p>
+          )}
+        </div>
+      </Dialog>
+
+      {/* Shift Transition Popup */}
+      <Dialog
+        open={shiftTransition !== null}
+        onClose={() => setShiftTransition(null)}
+        title="Shift Complete"
+        actions={
+          <Button onClick={() => setShiftTransition(null)}>Got it</Button>
+        }
+      >
+        <div className="space-y-4">
+          {shiftTransition && shiftTransition.leaving.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-sm font-medium text-slate-700">
+                Leaving the court
+              </h4>
+              <div className="space-y-1.5">
+                {shiftTransition.leaving.map(pid => (
+                  <div
+                    key={pid}
+                    className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white">
+                      {playerNumberMap.get(pid)?.toString() ?? '?'}
+                    </div>
+                    <span className="text-sm font-medium text-slate-900">
+                      {playerMap.get(pid) ?? 'Unknown'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {shiftTransition && shiftTransition.entering.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-sm font-medium text-slate-700">
+                Entering the court
+              </h4>
+              <div className="space-y-1.5">
+                {shiftTransition.entering.map(pid => (
+                  <div
+                    key={pid}
+                    className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2.5"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-green-500 text-xs font-bold text-white">
+                      {playerNumberMap.get(pid)?.toString() ?? '?'}
+                    </div>
+                    <span className="text-sm font-medium text-slate-900">
+                      {playerMap.get(pid) ?? 'Unknown'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </Dialog>
