@@ -24,6 +24,23 @@ export interface PlaytimeSplit {
   playerInId: string
 }
 
+/** The subset of `Shift` needed to total a whole game's playtime. */
+export interface PlaytimeGameShift {
+  startMinute: number
+  endMinute: number
+  lineupJson: string
+}
+
+/** Per-player totals for one game, all keyed by player id. */
+export interface GamePlaytime {
+  /** Minutes played. Every active player is present, including at 0. */
+  playtime: Map<string, number>
+  /** Shifts in which the player logged more than zero minutes. */
+  shiftsPlayed: Map<string, number>
+  /** Minutes actually played, summed over shifts — the denominator for a share. */
+  totalMinutes: number
+}
+
 /**
  * The default split point for a shift: its true midpoint.
  *
@@ -50,7 +67,7 @@ export function shiftPlaytime(
   startMinute: number,
   endMinute: number,
   playerIds: string[],
-  splits: PlaytimeSplit[],
+  splits: readonly PlaytimeSplit[],
 ): Map<string, number> {
   const ordered = splits
     .filter(s => s.minute >= startMinute && s.minute <= endMinute)
@@ -81,4 +98,49 @@ export function shiftPlaytime(
   }
 
   return minutes
+}
+
+/**
+ * Totals a whole game's playtime, split-aware.
+ *
+ * The single place the UI derives playtime from stored shifts, for the same reason
+ * `shiftPlaytime` is the single place a shift's is: the two display loops this replaced
+ * each reimplemented the walk and neither applied substitutions, so a game containing an
+ * injury sub reported the sub-out player at 0 minutes and the sub-in player at the full
+ * shift. `injurySub` rewrites the shift's lineup in place, so the sub-out player is not
+ * merely misweighted — they are absent from the shift altogether.
+ *
+ * Every active player appears in both maps, including at zero. That is not tidiness: a
+ * player who never got on court is the most informative row in a summary, and dropping
+ * them would let a lockout look like perfect participation (§4.5.7).
+ *
+ * `totalMinutes` is the time *actually played*, summed over shifts. It is deliberately
+ * not `segments × durationMinutes`, which is the configured maximum: a game whose final
+ * shift was shortened would report shares summing past 100%.
+ */
+export function gamePlaytime(
+  shifts: readonly PlaytimeGameShift[],
+  splits: readonly PlaytimeSplit[],
+  activePlayerIds: readonly string[],
+): GamePlaytime {
+  const playtime = new Map<string, number>()
+  const shiftsPlayed = new Map<string, number>()
+  for (const pid of activePlayerIds) {
+    playtime.set(pid, 0)
+    shiftsPlayed.set(pid, 0)
+  }
+
+  let totalMinutes = 0
+  for (const shift of shifts) {
+    totalMinutes += shift.endMinute - shift.startMinute
+    const lineup: string[] = JSON.parse(shift.lineupJson)
+    for (const [pid, mins] of shiftPlaytime(shift.startMinute, shift.endMinute, lineup, splits)) {
+      playtime.set(pid, (playtime.get(pid) ?? 0) + mins)
+      // A player who was subbed in and straight back out logged no time, so they were not
+      // in that shift for any purpose the summary reports.
+      if (mins > 0) shiftsPlayed.set(pid, (shiftsPlayed.get(pid) ?? 0) + 1)
+    }
+  }
+
+  return { playtime, shiftsPlayed, totalMinutes }
 }

@@ -20,14 +20,16 @@
 - Period tracking (check-off as game progresses)
 - Emergency roster adjustments mid-game
 - Playing time tracking per player
+- Game history: a per-team list of every game, and a post-game summary per game (playtime + shifts played)
 
 **Excluded (MVP):**
 - Live match tracking with actual timestamps
 - Stat logging (points, assists, etc.)
 - Post-game performance analysis
-- Browsing completed games / game history archive
 - Cloud sync / multi-device support
 - Multi-position players (e.g. `[G,F]` hybrids) — a player has at most one position, or none (flex)
+
+**Game history is now in scope** (see §4.6). It was excluded as "browsing completed games / game history archive"; the reason it was excluded is the one that drove the design — see §4.6.1, where the real gap turns out to be *reachability*, not analytics. "Post-game performance analysis" remains excluded: the summary stops at playtime and shifts played.
 
 ## 3. Data Architecture
 
@@ -603,23 +605,165 @@ independent of priority — with no template, all three priorities run the same
 position-blind algorithm, so "No template" is the honest control for a coach who
 wants positions off entirely rather than merely de-prioritized.
 
+### 4.6 Game History
+
+#### 4.6.1 What the gap actually is
+
+This feature was originally excluded as "browsing completed games / game history
+archive", which frames it as analytics. The code says otherwise. **There is no list UI
+anywhere in the app** — every `db.games` read in `src/` is a single `.get(gameId)`
+driven by a `gameId` the coach must already hold in the URL. `RosterList` never queries
+`db.games` at all.
+
+The consequence is not that past games are hard to browse. It is that **a game you
+navigate away from is unreachable**, and the most damaging case is a `DRAFT`: a coach
+sets up a game, gets pulled away, and on return has no path back to it. Nothing in the
+app can enumerate games, so a `DRAFT` can only be recovered by guessing a UUID.
+
+That reframes the feature. A history list is not a reporting surface bolted onto a
+working flow — it is the missing index that makes every game's own URL discoverable. So
+the list must include `DRAFT` and `ACTIVE` games, not just completed ones. A
+completed-only list would leave the actual bug in place.
+
+#### 4.6.2 Storage
+
+**No schema version bump is required.** `games` is already indexed on `teamId`,
+`status`, and `createdAt` (`db/schema.ts:27`), so a team-scoped, status-filtered,
+date-sorted list is supported directly.
+
+Two non-indexed fields are added to `Game`:
+
+| Field | Written by | Purpose |
+|---|---|---|
+| `startedAt?: Date` | `startGame` | When the coach hit Start |
+| `completedAt?: Date` | `advanceShift`, in the completion branch only | When the final shift was completed |
+
+Both follow the same rule as `lineupTemplate`/`position` (§4.5.7): non-indexed fields
+need no version block and no migration, and existing rows surface them as `undefined`.
+
+**The sort key is `completedAt ?? startedAt ?? createdAt`**, not `createdAt` alone.
+`createdAt` is when the coach hit "Create Game", which is pre-game and can be arbitrarily
+earlier than the game itself — a game set up Monday and played Saturday would sort a
+week out of place. The fallback chain gives each status the most meaningful time it
+actually has: completion for finished games, start for in-progress ones, and creation
+only as a last resort.
+
+**Old games are not backfilled**, and this is stated rather than papered over: for a game
+that predates these fields the real play time is unrecoverable, so it sorts by creation
+date. Backfilling `completedAt = createdAt` would be a lie stored in a durable field, and
+would be indistinguishable from a real one later.
+
+`startGame` and the completion branch of `advanceShift` are both single-field
+`db.games.update` calls today, so each is a one-line change.
+
+**`uncompleteShift` must clear `completedAt`,** and this is easy to miss because the
+function does not mention timestamps at all. It flips a `COMPLETED` game back to
+`ACTIVE` (`games.ts:277-279`) and has no other write to the game row, so a field added
+only to `advanceShift` would survive the revert. The game would then be `ACTIVE` but
+still sort by a completion time — the one case where the fallback chain produces an
+actively wrong answer rather than merely a stale one. Clearing it restores the
+`startedAt` fallback, which is the correct answer for a game in progress.
+
+#### 4.6.3 What a list row shows, and what it must not
+
+A row carries **cheap metadata only**: game name, effective date, status badge, segment
+count.
+
+It must not carry a playtime summary. Computing one per row means walking every shift of
+every game in the list, and `shiftSplits` has no `gameId` index — so splits for the whole
+list are either a full table scan or N indexed queries, repeated on every render. The
+summary is computed on the detail screen, where the game's shifts and splits are already
+loaded. The one aggregate a row can afford is a shift count, batched as a single
+`where('gameId').anyOf(...)` across the page.
+
+This is the same reasoning as §4.5.5's calibration harness: measure through the real
+entry point, and do not let a display convenience reshape a query into something the app
+cannot afford.
+
+#### 4.6.4 Playtime must come from `shiftPlaytime`
+
+The summary is the existing `PlaytimeSummary` component, reused rather than rebuilt. But
+**both current UI playtime loops are wrong**, and the archive would inherit the error:
+
+- `LineupDisplay.tsx:80-87` walks shifts and adds the full duration to every player in
+  the lineup. It never imports `shiftSplits`.
+- `GamedayMode.tsx:130-141` has the same defect (it is split-blind too; its COMPLETED
+  filter is incidental).
+
+Because `injurySub` rewrites the current shift's `lineupJson` in place, a player subbed
+out mid-shift is **absent from that shift entirely** — credited 0 minutes instead of half
+— and the player subbed in is **credited the full shift** instead of half. `LineupDisplay`
+renders this as the post-game summary, so today a game containing an injury sub reports
+playtime that is not what happened.
+
+`src/algorithm/playtime.ts:49-84` (`shiftPlaytime`) is the canonical, split-aware
+implementation, and its doc comment says it exists so callers "cannot drift apart." It is
+currently called only from two sites inside `games.ts`; **no route component imports it.**
+Both display loops move to it.
+
+`totalMinutes` is also wrong and is fixed in the same pass: it is currently
+`segments.length * game.durationMinutes` — the *configured maximum*, not the time
+actually played, so a game whose final shift was shortened reports percentages summing
+over 100%. It becomes the sum of the durations actually played.
+
+The invariant this buys: **one game reports the same playtime on the history row's
+detail view, on LineupDisplay, and to the recalculation logic that writes the plan.** A
+historical record that disagrees with the screen that produced it is worse than no record.
+
+#### 4.6.5 Names are live-joined, deliberately
+
+Nothing is snapshotted onto a game. `lineupJson` holds bare player IDs, and every screen
+resolves names from `db.players` at render time. **Renaming a player retroactively
+rewrites every past game.** This is a real fidelity cost and it is accepted for now.
+
+The reasoning: the alternative is a schema change plus a display branch on every one of
+the seven screens, for a benefit that is not obvious to the user it affects. A coach who
+renames "Alex" to "Alex R." most likely wants to see "Alex R." everywhere, including in
+history. The cost is that history is not a faithful record of *names as they were* — it is
+a faithful record of *who played and for how long*, which is what this feature is for.
+
+Consequence to respect: `PlaytimeSummary` keys its maps by **name**, and
+`shiftsPerPlayerByName` is built name-keyed at `LineupDisplay.tsx:89-93`. Two players with
+the same name collapse into one bar. `isDuplicateName` prevents new duplicates within a
+team but does not police existing ones, so this is reachable today. Keying the summary by
+player id and resolving names only at render time fixes it and is required regardless of
+this feature, since the archive is the surface where a long roster makes the collision
+visible.
+
+#### 4.6.6 Scope boundaries
+
+- **The summary stops at playtime and shifts played.** A fairness-spread figure and a
+  template-compliance figure are both derivable from the same walk, and both are excluded
+  — §2 still excludes post-game performance analysis. Neither is hard to add later.
+- **No per-game deletion.** Nothing in the app can delete one game today; only
+  `deleteTeam` removes them, by cascade. A destructive per-game action is a separate
+  decision, and a history list is exactly the screen where someone will ask for one.
+- **No season, schedule, or opponent concept.** There is none anywhere in the codebase,
+  and grouping is a flat newest-first list. Inventing a season hierarchy to fill a list
+  screen would be a larger feature wearing a smaller one's clothes.
+- **`DRAFT` rows route to Lineup Display, `ACTIVE` rows to Gameday Mode**, matching where
+  the coach would go anyway. A history list is an entry point to existing screens, not a
+  parallel set of them.
+
 ## 5. Screen Inventory
 
 | Screen | Purpose | Key Elements |
 |--------|---------|--------------|
 | **Team List** | Manage teams | Team cards (name), Create team button, tap to enter, swipe/long-press to delete |
-| **Roster List** | Manage players per team | Player cards (name, #, position badge, archived badge), Add/Edit/Delete/Archive, team default lineup template, back to team list |
+| **Roster List** | Manage players per team | Player cards (name, #, position badge, archived badge), Add/Edit/Delete/Archive, team default lineup template, link to Game History, back to team list |
 | **Active Player Selection** | Choose game-day roster | List of all team players with toggle switches, per-player position badge, template feasibility warnings against the selected set, "Generate Plan" button (requires ≥5 selected) |
 | **Game Setup** | Configure new game | Game name (defaults to date/time, editable), Structure toggle (Halves/Quarters), Duration picker, Substitution interval picker, Lineup template (preset + 5 slot chips), Priority (Balanced / Equal Time / Template), "Generate Plan" button |
 | **Lineup Display** | View generated plan | Segmented tabs (Q1/Q2/etc), Shift table (time, players on court, position chips), template-compliance marker per shift and an "N/M shifts match template" stat, "Re-shuffle" button, Total playtime per player, "Start Game" button, "Edit Gameday Roster" button |
 | **Gameday Mode** | Active game tracking | Current segment/shift display with on-court player list (position shown alongside name), tap player → "Sub Out" for injury replacement, "Complete Segment" button (auto-advances), "Un-complete" for backwards nav, "Edit Gameday Roster" button |
-| **Plan Summary** | Post-game review | Playtime distribution chart, Shifts played per player |
+| **Game History** | Browse this team's games | Game cards (name, effective date, status badge, segment count), newest first, all statuses, empty state per §6.7. Entry point only — no summary inline (§4.6.3) |
+| **Plan Summary** | Post-game review | Playtime distribution chart, Shifts played per player, split-aware (§4.6.4) |
 
 ### 5.1 Navigation Flow (React Router v7)
 
 ```
 /                                     → Team List
 /teams/:teamId                        → Roster List
+/teams/:teamId/games                  → Game History
 /teams/:teamId/game-setup             → Game Setup
 /teams/:teamId/game-setup/select      → Active Player Selection
 /teams/:teamId/lineup/:gameId         → Lineup Display
@@ -627,6 +771,11 @@ wants positions off entirely rather than merely de-prioritized.
 ```
 
 **Flow order:** Team List → Roster List → Game Setup → Active Player Selection → Lineup Display → Gameday Mode
+
+**Game History is a sibling entry point,** not a step in the chain: it is reached from
+Roster List and leads back into Lineup Display or Gameday Mode. It adds no terminal
+screen of its own, which is why it is the smallest deviation from this flow of any
+candidate feature.
 
 ### 5.2 Data Flow Between Screens
 
@@ -639,6 +788,7 @@ wants positions off entirely rather than merely de-prioritized.
 7. **Emergency Edit — Injury Sub** (Gameday Mode): Tap on-court player → "Sub Out" → app suggests replacement (coach overrides) → split shift 50/50 → recalculate future shifts → stay on Gameday Mode
 8. **Emergency Edit — Late Arrival Pre-Game** (Lineup Display): "Edit Gameday Roster" → toggle active players → "Save" → full regeneration → Lineup Display updates
 9. **Emergency Edit — Late Arrival Mid-Game** (Gameday Mode): "Edit Gameday Roster" → toggle active players → "Save" → recalculate future shifts → return to Gameday Mode
+10. **Game History** (Roster List → History → game): `teamId` selects the game's team scope; a row's `status` selects the destination — `ACTIVE` goes to Gameday Mode, everything else to Lineup Display. The list itself reads no writes; entering a row is the same navigation the coach would have performed from anywhere else, which is the point of §4.6.1
 
 ## 6. User Experience Details
 
@@ -722,6 +872,25 @@ wants positions off entirely rather than merely de-prioritized.
 - Empty state: Prompt to create first team when no teams exist
 - Empty roster state: Prompt to add first player when roster is empty
 - Game history list: "No games yet" with link to Game Setup
+
+### 6.8 Game History
+- Reached from Roster List. Flat list, newest first, no grouping or filtering — a coach
+  with one team and a season of games reads top-down and stops when they find what they
+  want
+- Each row: game name, effective date (§4.6.2), status badge, segment count
+- Status badges reuse the existing colors, so a `DRAFT` row is recognizably amber and an
+  `ACTIVE` row green against the Lineup Display and Gameday Mode screens. Adding new
+  colors here would make the same state look like two different things
+- Rows show no playtime or fairness figures. The list answers "which game", not "how did
+  it go" (§4.6.3)
+- Empty state: "No games yet", with a button to Game Setup
+- Tapping a row navigates to Gameday Mode if the game is `ACTIVE`, Lineup Display
+  otherwise. There is no separate read-only history detail screen: a completed game
+  already has one, and duplicating it would immediately drift
+- The date shown is the effective date, not `createdAt`, and a game predating
+  `startedAt`/`completedAt` shows its creation date without any marker. Inventing a
+  "date unknown" badge would imply a defect in a game that is perfectly intact — the
+  limit is on what was recorded, not on the game
 
 ## 7. Testing Strategy
 
@@ -861,6 +1030,46 @@ both places is not redundant — a mis-wired `phase` is invisible to the unit te
 **Migration**
 - A game row written before this feature (no `lineupTemplate`, no `lineupPriority`) loads and regenerates without error, defaulting to `BALANCED` + no template
 
+### 7.5 Game History Tests (§4.6)
+
+**Playtime correctness — the bug this feature exposes**
+- A game with one mid-shift injury sub reports the sub-out player at **half** the shift and the sub-in player at **half**, not 0 and the full duration. This is asserted against the current implementation's output as well, so the fix is a test that would have failed before it
+- `totalMinutes` is the sum of durations **actually played**, and the summary percentages sum to at most 100. The current `segments.length * durationMinutes` passes a game with no substitutions by accident, so the assertion must use a game that has one — a test that only covers the easy case is what let the bug through
+- The same game reports identical playtime through `LineupDisplay` and through the
+  recalculation path in `games.ts`. The whole point of routing both through
+  `shiftPlaytime` is that they cannot drift
+- Two players sharing a name produce **two** summary bars, not one collapsed bar
+
+**Timestamps**
+- `startGame` sets `startedAt` once; calling it again does not overwrite it
+- `advanceShift` sets `completedAt` **only** in the branch that completes the game, and
+  only once. Advancing through a segment boundary must not set it
+- `uncompleteShift` on a game's final shift flips status back to `ACTIVE` and clears
+  `completedAt`, so re-completing re-stamps it. Asserted because the reverse cascade is
+  where a stale timestamp would silently survive
+
+**Ordering and the fallback chain**
+- The sort key is `completedAt ?? startedAt ?? createdAt`, asserted as a pure function
+  over mixed-status rows: a completed game outranks an in-progress one, which outranks a
+  draft, regardless of `createdAt` order. A game created Monday and played Saturday must
+  sort after a game created Friday and played Friday — the case that a `createdAt` sort
+  gets wrong and the reason the field exists
+- A game with no `startedAt`/`completedAt` (written before this feature) still loads and
+  sorts by `createdAt`, with no error and no fabricated timestamp
+
+**Reachability — the actual gap (§4.6.1)**
+- A `DRAFT` game appears in the list and routes back to Lineup Display. This is the
+  regression guard for the defect the feature exists to fix; a completed-only list fails
+  it
+- An `ACTIVE` game routes to Gameday Mode; every other status routes to Lineup Display
+- An empty team shows the "No games yet" empty state rather than a blank screen
+
+**Query discipline**
+- A game list containing games with and without injury subs reads shifts through a
+  `gameId` index and splits through a single `shiftId` batch — asserted by the shape of
+  the query helper rather than by timing. A summary computed per row (§4.6.3) would scan
+  `shiftSplits` for the whole table, and that is the property worth pinning
+
 ## 8. Technical Approach
 
 ### 8.1 Stack
@@ -874,6 +1083,12 @@ both places is not redundant — a mis-wired `phase` is invisible to the unit te
 - **Linting:** ESLint + Prettier
 
 ### 8.2 Project Structure
+
+> The tree below predates §4.5 and §4.6 and is illustrative. As built, the additions
+> are `algorithm/positions.ts`, `algorithm/playtime.ts`, `components/positions.tsx`,
+> `components/TemplateDiagnostics.tsx`, `lib/positions.ts`, and a
+> `routes/GameHistory.tsx`; `routes/ShiftTable.tsx`, `routes/SegmentTabs.tsx`, and
+> `hooks/usePlayers.ts` were never split out.
 ```
 subs/
 ├── public/
@@ -1015,6 +1230,33 @@ Sequenced so each step is independently shippable and the risky part lands first
 7. **Lineup Display / Gameday Mode position chips + compliance markers + position-aware `suggestReplacement`.**
 8. **README update** — README §"The lineup algorithm" currently describes the position-blind greedy and will need the template path documented alongside it.
 
+### Phase 6: Game History (§4.6)
+Ordered so the correctness fix lands before the UI that would otherwise inherit it.
+
+1. **Fix the playtime arithmetic first, with no new UI.** Route `LineupDisplay`'s
+   summary and `GamedayMode`'s tiebreaker loop through `shiftPlaytime`, and fix
+   `totalMinutes` to the time actually played (§4.6.4). This is a **behavior change to
+   an existing screen**, independent of the history list, and it should ship on its own
+   so the corrected numbers are reviewable before a new screen starts rendering them.
+2. **Key `PlaytimeSummary` by player id, not name** (§4.6.5). Same argument: the
+   duplicate-name collapse is a live bug that the archive merely makes visible.
+3. **Add `startedAt`/`completedAt`** to `Game`, written in `startGame` and the completion
+   branch of `advanceShift`, and **cleared in `uncompleteShift`** (§4.6.2). No schema
+   bump. With a test asserting both are written exactly once and never on the
+   un-complete path's other transitions.
+4. **`GameHistory` screen + route + Roster List link.** Metadata rows only, all three
+   statuses, effective-date sort. This is the step that makes games reachable and is
+   independently shippable on its own.
+5. **README + design updates** — remove the "Not implemented" game-history gap entry.
+
+**As built.** Steps 1 and 2 landed as `gamePlaytime` in `algorithm/playtime.ts` plus an
+id-keyed `PlaytimeSummary`; step 3 is `startedAt`/`completedAt` on `Game`; step 4 is
+`routes/GameHistory.tsx` and `algorithm/gameHistory.ts`. Two ordering details differed
+from the plan and are worth recording: `startGame` now *reads* the game before writing so
+a second call cannot overwrite `startedAt`, and the history screen's segment query is
+deliberately self-contained rather than depending on the `games` query's result — an array
+dependency would make it re-subscribe on every resolve of the other query.
+
 ## 10. Open Questions
 
 | Question | Recommendation |
@@ -1032,3 +1274,7 @@ Sequenced so each step is independently shippable and the risky part lands first
 | What if a coach sets a template mid-game? | Not supported. Template and priority are DRAFT-time settings. The active-player's actual positions can change freely, since positions are read live at generation |
 | How does a coach turn the template *off*? | **Resolved.** "No template" is a real preset alongside Balanced / Passing / Big / Custom (§4.5.8), storing `lineupTemplate: undefined` and reading out as "No template · position-blind". Needed because a team default pre-fills the form — without a visible off state, every game would ship a template the coach never chose, and the only alternative was clearing five chips by tapping them |
 | Does path-selection rule (c) apply mid-game? | **Resolved.** Generation-time only. `PositionConfig.phase` (`'create' \| 'midgame'`) is the sole discriminator. An unsatisfiable template mid-game is a committed, coach-owned situation, not a mistake to correct away — silently discarding the coach's position intent for the rest of the game is worse than showing a flagged, coach-overridable break (§4.5.4) |
+| Should game history snapshot player names? | **Resolved: no, live-join**, matching all seven existing screens. The cost is real and stated — renaming a player retroactively rewrites past games (§4.6.5). Revisit only if the archive grows a feature that *depends* on historical fidelity, such as comparing a player across a season after a roster change |
+| Should the summary include fairness or template-compliance figures? | **Not now.** Both are one walk away from the playtime computation, and §2 still excludes post-game performance analysis. Add them when the question of what a coach actually reads after the horn is better evidenced than one screen's worth of guesswork |
+| Can a single game be deleted from the history list? | **Out of scope, deliberately.** Nothing can delete one game today; only `deleteTeam` cascades. A history list is exactly where the request will appear, and it deserves a considered answer — a cascade, a soft-delete, an export-and-delete, or a refusal — rather than a button added alongside the list |
+| Should the list be filterable, or grouped by month/season? | **No, flat newest-first.** No season or schedule concept exists anywhere in the codebase. Grouping is a larger feature wearing a smaller one's clothes, and an unfiltered list is what a single-team, one-season dataset actually wants |

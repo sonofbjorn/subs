@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import TeamList from './routes/TeamList'
 import RosterList from './routes/RosterList'
+import GameHistory from './routes/GameHistory'
 import GameSetup from './routes/GameSetup'
 import ActivePlayerSelect from './routes/ActivePlayerSelect'
 import LineupDisplay from './routes/LineupDisplay'
@@ -16,6 +17,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<TeamList />} />
         <Route path="/teams/:teamId" element={<RosterList />} />
+        <Route path="/teams/:teamId/games" element={<GameHistory />} />
         <Route path="/teams/:teamId/game-setup" element={<GameSetup />} />
         <Route path="/teams/:teamId/game-setup/select" element={<ActivePlayerSelect />} />
         <Route path="/teams/:teamId/lineup/:gameId" element={<LineupDisplay />} />

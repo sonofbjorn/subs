@@ -6,6 +6,7 @@ import type { Player, Position, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { startGame, recalculateLineups } from '../db/repositories/games'
 import { slotMismatches, resolveToTemplate } from '../algorithm/positions'
+import { gamePlaytime } from '../algorithm/playtime'
 import PlaytimeSummary from '../components/PlaytimeSummary'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
@@ -28,6 +29,9 @@ export default function LineupDisplay() {
     if (!teamId) return Promise.resolve([] as Player[])
     return db.players.where('teamId').equals(teamId).toArray()
   }, [teamId])
+  // `shiftSplits` has no `gameId` index, so this is a table scan narrowed in JS. One
+  // scan for the whole game, not one per shift.
+  const allSplits = useLiveQuery(() => db.shiftSplits.toArray(), [])
 
   const [selectedSegment, setSelectedSegment] = useState(0)
 
@@ -68,37 +72,25 @@ export default function LineupDisplay() {
 
   const playerMap = new Map(allPlayers.map(p => [p.id, p.name]))
   const byName = (a: string, b: string) => (playerMap.get(a) ?? '').localeCompare(playerMap.get(b) ?? '')
-  const activePlayerNames = game.activePlayerIds.map(id => playerMap.get(id) ?? 'Unknown').sort()
+  const activePlayers = game.activePlayerIds
+    .map(id => ({ id, name: playerMap.get(id) ?? 'Unknown' }))
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   const currentSegment = segments[selectedSegment]
   const segmentShifts = currentSegment
     ? shifts.filter(s => s.segmentId === currentSegment.id).sort((a, b) => a.startMinute - b.startMinute)
     : []
 
-  const playtime = new Map<string, number>()
-  const shiftsPerPlayer = new Map<string, number>()
-  for (const shift of shifts) {
-    const lineup: string[] = JSON.parse(shift.lineupJson)
-    const duration = shift.endMinute - shift.startMinute
-    for (const pid of lineup) {
-      playtime.set(pid, (playtime.get(pid) ?? 0) + duration)
-      shiftsPerPlayer.set(pid, (shiftsPerPlayer.get(pid) ?? 0) + 1)
-    }
-  }
+  // Split-aware, via the same helper the recalculation logic uses, so the summary here
+  // and the plan that produced it cannot report different numbers.
+  const shiftIds = new Set(shifts.map(s => s.id))
+  const splits = (allSplits ?? []).filter(s => shiftIds.has(s.shiftId))
+  const { playtime, shiftsPlayed, totalMinutes } = gamePlaytime(
+    shifts,
+    splits,
+    game.activePlayerIds,
+  )
 
-  const shiftsPerPlayerByName = new Map<string, number>()
-  for (const pid of game.activePlayerIds) {
-    const name = playerMap.get(pid) ?? 'Unknown'
-    shiftsPerPlayerByName.set(name, shiftsPerPlayer.get(pid) ?? 0)
-  }
-
-  const playtimeByName = new Map<string, number>()
-  for (const [pid, minutes] of playtime) {
-    const name = playerMap.get(pid) ?? 'Unknown'
-    playtimeByName.set(name, minutes)
-  }
-
-  const totalMinutes = segments.length * game.durationMinutes
   const template = game.lineupTemplate
 
   async function handleStartGame() {
@@ -250,21 +242,21 @@ export default function LineupDisplay() {
       {game.status === 'COMPLETED' ? (
         <div className="mt-6">
           <PlaytimeSummary
-            playerNames={activePlayerNames}
-            playtime={playtimeByName}
+            players={activePlayers}
+            playtime={playtime}
             totalMinutes={totalMinutes}
-            shiftsPerPlayer={shiftsPerPlayerByName}
+            shiftsPerPlayer={shiftsPlayed}
           />
         </div>
       ) : (
         <Card className="mt-6">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">Playing Time</h3>
           <div className="space-y-2">
-            {activePlayerNames.map(name => {
-              const minutes = playtimeByName.get(name) ?? 0
+            {activePlayers.map(({ id, name }) => {
+              const minutes = playtime.get(id) ?? 0
               const pct = totalMinutes > 0 ? Math.round((minutes / totalMinutes) * 100) : 0
               return (
-                <div key={name} className="flex items-center gap-3">
+                <div key={id} className="flex items-center gap-3">
                   <span className="w-32 text-sm text-slate-700 truncate">{name}</span>
                   <div className="flex-1">
                     <div className="h-2 rounded-full bg-slate-100">

@@ -297,6 +297,67 @@ shifts of Q1 also open Q2. Flattening keeps the streak intact. Neither function
 touches the `plannedPlaytimes` table at all — playtime is always derived from
 shifts, never snapshotted.
 
+### Game history
+
+`/teams/:teamId/games` lists every game for a team, newest first. Reachability is the
+point: **before this, no screen anywhere listed games** — every `db.games` read in the
+app was a single `.get(gameId)` from a URL, so a game you navigated away from could only
+be reopened by guessing its id. That made an abandoned `DRAFT` unrecoverable.
+
+So the list includes **all three statuses**, not just completed ones, and a row routes to
+where the coach would go anyway: `ACTIVE` → Gameday Mode, everything else → Lineup
+Display. There is no separate read-only history screen, because a completed game already
+has one and a duplicate would immediately drift.
+
+**Ordering is `completedAt ?? startedAt ?? createdAt`,** not `createdAt`. `createdAt` is
+when the coach hit "Create Game", so a game planned Monday and played Saturday would sort
+a week out of place. Two non-indexed fields, `startedAt` and `completedAt`, are written by
+`startGame` and by the completion branch of `advanceShift` — non-indexed means no Dexie
+version block and no migration, the same rule the position fields follow.
+
+`uncompleteShift` **clears** `completedAt` in the same update that flips the game back to
+`ACTIVE`. That function writes nothing else to the game row, so a stamp added only to
+`advanceShift` would outlive the revert and leave an in-progress game sorted by a finish
+time it no longer has.
+
+Games written before these fields existed are not backfilled. The real play time is
+unrecoverable, and `completedAt = createdAt` would be a fabrication stored in a durable
+field, indistinguishable from a genuine stamp later. They sort by `createdAt` and are
+given no "date unknown" badge — the limit is on what was recorded, not on the game.
+
+**Rows show metadata only** — name, date, status, segment count, player count. A per-row
+playtime summary would walk every shift of every game and scan `shiftSplits`, which has no
+`gameId` index, on every render. The summary lives on the detail screen, where that data
+is already loaded. Segment counts come from one batched `anyOf` query for the page.
+
+**Player names are not snapshotted.** `lineupJson` stores bare ids and every screen
+resolves names from `db.players` at render time, so renaming a player retroactively
+rewrites past games. Accepted deliberately: it matches all seven other screens, and a
+coach who renames "Alex" to "Alex R." most likely wants to see the new name everywhere.
+The archive is a faithful record of *who played and for how long*, not of names as they
+were.
+
+### Playtime is derived, and derived correctly
+
+`gamePlaytime` (`src/algorithm/playtime.ts`) is the single place the UI totals a game's
+playtime from stored shifts, and it is split-aware by delegating to `shiftPlaytime`.
+
+Both display loops this replaced were **split-blind**: each walked shifts and added the
+full duration to every player in the lineup, never reading `shiftSplits`. Because
+`injurySub` rewrites the current shift's lineup in place, the sub-out player was not
+merely misweighted — they were *absent* from the shift, credited 0 minutes instead of
+half, while the sub-in player got the full shift. `LineupDisplay` rendered exactly that as
+the post-game summary, so any game containing an injury sub reported playtime that did
+not happen.
+
+`totalMinutes` was wrong in the same breath: it was `segments.length * durationMinutes`,
+the *configured maximum*, so a game whose final shift was shortened reported shares
+summing past 100%. It is now the sum of durations actually played.
+
+`PlaytimeSummary` is keyed by **player id**, not by name. `isDuplicateName` only blocks new
+duplicates, so two players sharing a name are reachable in an existing roster, and
+name-keyed maps collapsed them into a single bar with summed minutes.
+
 ### Emergency substitution
 
 Tapping **Emergency Sub** in Gameday Mode lets you pick a player on court and a
@@ -347,15 +408,20 @@ src/
 ├── algorithm/
 │   ├── lineup.ts           # fairness engine (round-robin)
 │   ├── lineup.test.ts      # 25 tests
-│   ├── playtime.ts         # per-shift playtime + substitution splits
-│   └── playtime.test.ts    # 15 tests
+│   ├── playtime.ts         # per-shift + per-game playtime, substitution splits
+│   ├── playtime.test.ts    # 15 tests
+│   ├── positions.ts        # min-cost matching solver + template diagnostics
+│   ├── positions.test.ts   # 49 tests
+│   └── gameHistory.ts      # effective game date + list ordering
+│       └── gameHistory.test.ts  # 19 tests
 ├── db/
 │   ├── schema.ts           # Dexie instance + table/index definitions
 │   └── repositories/       # teams.ts · players.ts (CRUD) · games.ts (all game logic)
-│       └── games.integration.test.ts  # 3 tests against a real DB
+│       └── games.integration.test.ts  # 17 tests against a real DB
 ├── routes/                 # one file per screen
 │   ├── TeamList.tsx            / → team CRUD
 │   ├── RosterList.tsx          /teams/:teamId → player CRUD
+│   ├── GameHistory.tsx         /teams/:teamId/games
 │   ├── GameSetup.tsx           /teams/:teamId/game-setup
 │   ├── ActivePlayerSelect.tsx  /teams/:teamId/game-setup/select
 │   ├── LineupDisplay.tsx       /teams/:teamId/lineup/:gameId
@@ -540,6 +606,26 @@ A related fairness issue was fixed alongside: the recalculation timeline was
 seeded with the *pre*-swap lineup, which marked a player who had just checked in
 as rested and gave them an unearned rest boost in the very next shift.
 
+- **Playtime was wrong in both screens that displayed it.** `LineupDisplay`'s
+  post-game summary and `GamedayMode`'s sub-suggestion fairness tiebreaker each
+  walked shifts and added the full shift duration to every player in the lineup,
+  never reading `shiftSplits`. Since `injurySub` rewrites the current shift's
+  lineup in place, a player subbed out mid-shift was *absent* from that shift
+  rather than misweighted — 0 minutes instead of half — while the sub-in player
+  got the whole shift. `LineupDisplay` rendered that as the final summary, so any
+  game with an injury sub reported playtime that did not happen. Both now go
+  through `gamePlaytime`, the same split-aware helper the recalculation path in
+  `games.ts` already used, so a historical record cannot disagree with the plan
+  that produced it. `totalMinutes` was `segments.length * durationMinutes` — the
+  configured maximum, not time played — so a shortened final shift pushed shares
+  past 100%; it is now the sum of durations actually played. `PlaytimeSummary` is
+  also keyed by player id rather than name, so two players sharing a name get two
+  bars instead of one collapsed bar with summed minutes.
+
+- **Games became reachable.** See [Game history](#game-history). Before this,
+  no screen listed games; every `db.games` read was a single `.get(gameId)`, so an
+  abandoned draft could only be recovered by guessing its id.
+
 ### Dead code
 
 - `PlannedPlaytime` / the `plannedPlaytimes` table is declared in `types.ts` and
@@ -556,10 +642,6 @@ as rested and gave them an unearned rest boost in the very next shift.
 - **Dark mode.** The design calls for `prefers-color-scheme` support; every
   Tailwind class in the app is hardcoded light. `theme_color` in the manifest is
   `#1e293b` (slate-800), so the OS title bar and the app body do not match.
-- **Game history.** Explicitly excluded from the MVP. There is still no list of
-  games anywhere in the UI — every `db.games` read is a single `.get(gameId)` — so
-  a game you navigate away from is unreachable. The draft-orphaning case that used
-  to trigger this is fixed, but the underlying gap remains.
 - **Playwright E2E tests** and Playwright as a dependency.
 - **Prettier**, despite the design doc listing it. Formatting is enforced only
   by convention and ESLint.
@@ -575,12 +657,11 @@ any change in progress:
 - `src/routes/ActivePlayerSelect.tsx:51` — `react-hooks/set-state-in-effect`;
   selection state is seeded from an async query inside an effect.
 
-Tests pass (25/25) and `tsc -b` is clean.
+Tests pass (125/125) and `tsc -b` is clean.
 
 ### Uncommitted work
 
-`src/routes/GamedayMode.tsx` has uncommitted changes adding a "Shift Complete"
-transition dialog that names the players leaving and entering the court.
+None — the tree is clean as of this commit.
 
 ---
 
@@ -592,7 +673,10 @@ way:** §4.2 specifies a *weighted-random with rest-boost* algorithm, and §7.1
 specifies distribution-based tests to accommodate that randomness. Commit
 `3201931` replaced it with the deterministic round-robin described above, and the
 tests were rewritten to assert exact fairness properties instead. §8.2's file
-tree also lists components that were never built (`PlayerCard.tsx`,
-`ShiftTable.tsx`, `SegmentTabs.tsx`, `style.css`).
+tree is now marked illustrative and lists components that were never built
+(`PlayerCard.tsx`, `ShiftTable.tsx`, `SegmentTabs.tsx`, `style.css`).
+
+Sections §4.5 (positions and lineup templates) and §4.6 (game history) were
+added during implementation and do match the code.
 
 Treat `design.md` as the "why" and this README as the "what actually is".

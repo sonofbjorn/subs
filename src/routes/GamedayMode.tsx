@@ -6,6 +6,7 @@ import type { Player, Position, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { advanceShift, uncompleteShift, injurySub } from '../db/repositories/games'
 import { slotMismatches, resolveToTemplate } from '../algorithm/positions'
+import { gamePlaytime } from '../algorithm/playtime'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 import Dialog from '../components/ui/dialog'
@@ -127,17 +128,21 @@ export default function GamedayMode() {
     ? game.activePlayerIds.filter(pid => !onCourtSet.has(pid) && !injuredSet.has(pid)).sort(byName)
     : []
 
+  /**
+   * Fairness totals for the sub suggestion, over **completed** shifts only.
+   *
+   * The current shift is excluded on purpose: its time is not yet earned, and the coach
+   * is choosing a sub for it right now. Split-aware via the same helper as the summary,
+   * so a player who went off injured mid-shift is not read as never having played.
+   */
   function getPlaytimeTotals(): Map<string, number> {
-    const pt = new Map<string, number>()
-    for (const shift of shifts!) {
-      if (shift.status !== 'COMPLETED') continue
-      const lineup: string[] = JSON.parse(shift.lineupJson)
-      const dur = shift.endMinute - shift.startMinute
-      for (const pid of lineup) {
-        pt.set(pid, (pt.get(pid) ?? 0) + dur)
-      }
-    }
-    return pt
+    const completed = shifts!.filter(s => s.status === 'COMPLETED')
+    const shiftIds = new Set(completed.map(s => s.id))
+    return gamePlaytime(
+      completed,
+      (shiftSplits ?? []).filter(s => shiftIds.has(s.shiftId)),
+      game!.activePlayerIds,
+    ).playtime
   }
 
   /**

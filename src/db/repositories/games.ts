@@ -171,7 +171,12 @@ export async function recalculateLineups(gameId: string): Promise<void> {
 }
 
 export async function startGame(gameId: string): Promise<void> {
-  await db.games.update(gameId, { status: 'ACTIVE' })
+  // `startedAt` is written only on the DRAFT -> ACTIVE transition, so resuming a game
+  // that is already in progress keeps the original tip-off time.
+  const existing = await db.games.get(gameId)
+  await db.games.update(gameId, existing?.startedAt
+    ? { status: 'ACTIVE' }
+    : { status: 'ACTIVE', startedAt: new Date() })
   const segments = await db.segments
     .where('gameId')
     .equals(gameId)
@@ -224,8 +229,9 @@ export async function advanceShift(gameId: string): Promise<void> {
         await db.shifts.update(nextShifts[0].id, { status: 'CURRENT' })
       }
     } else {
-      // Game complete
-      await db.games.update(gameId, { status: 'COMPLETED' })
+      // Game complete. This is the only branch that sets `completedAt` — a segment
+      // boundary or an intra-segment advance must not stamp a finish time.
+      await db.games.update(gameId, { status: 'COMPLETED', completedAt: new Date() })
     }
   }
 }
@@ -272,10 +278,16 @@ export async function uncompleteShift(gameId: string): Promise<void> {
     }
   }
 
-  // Ensure game is ACTIVE
+  // Ensure game is ACTIVE.
+  //
+  // `completedAt` is cleared in the same update, and it has to be: this function writes
+  // nothing else to the game row, so a stamp added only to `advanceShift` would outlive
+  // the revert and leave an in-progress game sorted by a finish time it no longer has.
+  // Clearing it restores the `startedAt` fallback, which is the right answer for a game
+  // in progress.
   const game = await db.games.get(gameId)
   if (game && game.status === 'COMPLETED') {
-    await db.games.update(gameId, { status: 'ACTIVE' })
+    await db.games.update(gameId, { status: 'ACTIVE', completedAt: undefined })
   }
 }
 

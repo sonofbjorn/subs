@@ -50,6 +50,22 @@ export interface Game {
   status: GameStatus
   createdAt: Date
   /**
+   * When the coach hit "Start Game", set once by `startGame`.
+   *
+   * Non-indexed, so no schema version block and no migration: existing rows read back as
+   * `undefined`. The game history list sorts on `completedAt ?? startedAt ?? createdAt`
+   * because `createdAt` is when the game was *set up*, which for a game planned days
+   * ahead is not when it was played.
+   */
+  startedAt?: Date
+  /**
+   * When the final shift was completed. Set by `advanceShift`, and **cleared by
+   * `uncompleteShift`** — which flips the game back to `ACTIVE` and writes nothing else,
+   * so a field added only to the completion branch would survive the revert and leave an
+   * in-progress game sorted by a stale finish time.
+   */
+  completedAt?: Date
+  /**
    * Snapshotted at game creation. Absent means "no template" and the
    * position-blind algorithm runs regardless of priority. Legacy rows have no
    * `lineupTemplate`.

@@ -6,7 +6,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { Position } from '../../types'
 import { db } from '../schema'
-import { createGame, startGame, advanceShift, injurySub, updateActiveRoster } from './games'
+import {
+  createGame, startGame, advanceShift, uncompleteShift,
+  injurySub, updateActiveRoster,
+} from './games'
+import { gamePlaytime } from '../../algorithm/playtime'
+import { buildGameHistory, effectiveGameDate } from '../../algorithm/gameHistory'
 
 const teamId = 'team-1'
 
@@ -113,6 +118,213 @@ describe('injurySub playtime accounting (integration)', () => {
     for (const [, mins] of total) {
       expect(mins).toBeLessThanOrEqual(totalShiftMinutes)
     }
+  })
+})
+
+describe('gamePlaytime against stored shifts (integration)', () => {
+  beforeEach(reset)
+
+  it('reports the summary the display now shows, which the old split-blind walk got wrong', async () => {
+    for (const id of players) await db.players.add({ id, teamId, name: id, isArchived: false })
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: players,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+    })
+    await startGame(gameId)
+    await advanceShift(gameId)
+
+    const current = (await db.shifts.where('gameId').equals(gameId).toArray()).find(s => s.status === 'CURRENT')!
+    const lineup: string[] = JSON.parse(current.lineupJson)
+    const activeNow = (await db.games.get(gameId))!.activePlayerIds
+    const out = lineup[0]
+    const inId = activeNow.find(p => !lineup.includes(p))!
+    await injurySub(gameId, current.id, out, inId)
+    await advanceShift(gameId)
+
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    const allSplits = await db.shiftSplits.toArray()
+    const { playtime, totalMinutes } = gamePlaytime(
+      shifts,
+      allSplits.filter(sp => shifts.some(s => s.id === sp.shiftId)),
+      activeNow,
+    )
+
+    // Isolate the subbed shift: these are its totals, not the game's. The split-blind loop
+    // that LineupDisplay used gave `out` nothing at all in this shift, because injurySub
+    // rewrites the lineup in place and so removed them from it entirely.
+    const { playtime: inShift } = gamePlaytime(
+      [current],
+      allSplits.filter(sp => sp.shiftId === current.id),
+      activeNow,
+    )
+    expect(inShift.get(out)).toBe(2.5)
+    expect(inShift.get(inId)).toBe(2.5)
+
+    // Game-wide, `out` is not erased: they keep the full first shift. `inId` is larger
+    // still, because `injurySub` puts them in the active roster and regenerates the future
+    // shifts, so they play on past the sub. Both assertions are about the subbed shift
+    // above; these only confirm the walk accumulates the rest of the game.
+    expect(playtime.get(out)).toBeGreaterThan(2.5)
+    expect(playtime.get(inId)).toBeGreaterThan(2.5)
+
+    // Shares sum to at most 100%, which the old `segments * durationMinutes` denominator
+    // could exceed on any game with a shortened final shift.
+    const shares = [...playtime.values()].map(m => m / totalMinutes)
+    for (const share of shares) expect(share).toBeLessThanOrEqual(1)
+  })
+
+  it('agrees with the totals the recalculation path computes internally', async () => {
+    // Both read the same stored rows, so they must produce the same numbers. A drift here
+    // means a historical record disagrees with the plan that produced it.
+    for (const id of players) await db.players.add({ id, teamId, name: id, isArchived: false })
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: players,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+    })
+    await startGame(gameId)
+    await advanceShift(gameId)
+    const current = (await db.shifts.where('gameId').equals(gameId).toArray()).find(s => s.status === 'CURRENT')!
+    const lineup: string[] = JSON.parse(current.lineupJson)
+    const activeNow = (await db.games.get(gameId))!.activePlayerIds
+    await injurySub(gameId, current.id, lineup[0], activeNow.find(p => !lineup.includes(p))!)
+
+    // `injurySub` internally recomputes playtime from completed + current shifts to seed
+    // the regenerated future plan. Reading it back off the same rows must agree.
+    const { playtime: internal } = await import('./games').then(async () => {
+      const { shiftPlaytime } = await import('../../algorithm/playtime')
+      const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+      const allSplits = await db.shiftSplits.toArray()
+      const acc = new Map<string, number>()
+      for (const s of shifts) {
+        if (s.status === 'PENDING') continue
+        for (const [pid, mins] of shiftPlaytime(
+          s.startMinute, s.endMinute, JSON.parse(s.lineupJson),
+          allSplits.filter(sp => sp.shiftId === s.id),
+        )) acc.set(pid, (acc.get(pid) ?? 0) + mins)
+      }
+      return { playtime: acc }
+    })
+
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    const played = shifts.filter(s => s.status !== 'PENDING')
+    const shiftIds = new Set(played.map(s => s.id))
+    const { playtime } = gamePlaytime(
+      played,
+      (await db.shiftSplits.toArray()).filter(sp => shiftIds.has(sp.shiftId)),
+      activeNow,
+    )
+    for (const [pid, mins] of internal) expect(playtime.get(pid)).toBeCloseTo(mins, 6)
+  })
+})
+
+describe('game history timestamps (integration)', () => {
+  beforeEach(reset)
+
+  // Players are added once per test; adding them again would violate the primary key.
+  async function seedPlayers() {
+    for (const id of players) await db.players.add({ id, teamId, name: id, isArchived: false })
+  }
+
+  async function newGame(structure: 'HALVES' | 'QUARTERS' = 'QUARTERS') {
+    return createGame({
+      teamId, name: 'g', activePlayerIds: players,
+      structure, durationMinutes: 20, substitutionIntervalMinutes: 5,
+    })
+  }
+
+  it('stamps startedAt once and does not overwrite it on resume', async () => {
+    await seedPlayers()
+    const gameId = await newGame()
+    expect((await db.games.get(gameId))!.startedAt).toBeUndefined()
+
+    await startGame(gameId)
+    const first = (await db.games.get(gameId))!.startedAt
+    expect(first).toBeInstanceOf(Date)
+
+    await startGame(gameId)
+    expect((await db.games.get(gameId))!.startedAt).toEqual(first)
+  })
+
+  it('stamps completedAt only when the game actually completes', async () => {
+    await seedPlayers()
+    const gameId = await newGame()
+    await startGame(gameId)
+    // 1 quarter of 20 min in 5 min shifts = 4 shifts. Advancing across a shift boundary
+    // and finishing a segment must not stamp a finish time.
+    await advanceShift(gameId)
+    expect((await db.games.get(gameId))!.completedAt).toBeUndefined()
+    await advanceShift(gameId)
+    expect((await db.games.get(gameId))!.completedAt).toBeUndefined()
+
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    const remaining = shifts.filter(s => s.status !== 'COMPLETED').length
+    for (let i = 0; i < remaining; i++) await advanceShift(gameId)
+
+    const done = await db.games.get(gameId)
+    expect(done!.status).toBe('COMPLETED')
+    expect(done!.completedAt).toBeInstanceOf(Date)
+  })
+
+  it('clears completedAt when the final shift is un-completed', async () => {
+    // The case that would otherwise leave an in-progress game sorted by a finish time it
+    // no longer has: uncompleteShift flips status to ACTIVE and writes nothing else.
+    await seedPlayers()
+    const gameId = await newGame()
+    await startGame(gameId)
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    for (let i = 0; i < shifts.length; i++) await advanceShift(gameId)
+    expect((await db.games.get(gameId))!.completedAt).toBeInstanceOf(Date)
+
+    await uncompleteShift(gameId)
+    const reverted = await db.games.get(gameId)
+    expect(reverted!.status).toBe('ACTIVE')
+    expect(reverted!.completedAt).toBeUndefined()
+    // And the effective date falls back to the start, which is right for a live game.
+    expect(effectiveGameDate(reverted!)).toEqual(reverted!.startedAt)
+  })
+
+  it('re-stamps completedAt if the game is completed again', async () => {
+    await seedPlayers()
+    const gameId = await newGame()
+    await startGame(gameId)
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    for (let i = 0; i < shifts.length; i++) await advanceShift(gameId)
+    await uncompleteShift(gameId)
+    await advanceShift(gameId)
+    expect((await db.games.get(gameId))!.completedAt).toBeInstanceOf(Date)
+  })
+
+  it('loads a game written before the timestamp fields existed, without error', async () => {
+    // A legacy row: no startedAt, no completedAt. It must still be listed and sortable.
+    const id = 'legacy'
+    await db.games.add({
+      id, teamId, name: 'old', activePlayerIds: players, injuredPlayerIds: [],
+      structure: 'HALVES', durationMinutes: 20, substitutionIntervalMinutes: 5,
+      maxConsecutiveShifts: 2, status: 'COMPLETED', createdAt: new Date('2026-01-01T18:00:00'),
+    })
+    const legacy = (await db.games.get(id))!
+    expect(legacy.startedAt).toBeUndefined()
+    expect(legacy.completedAt).toBeUndefined()
+    expect(effectiveGameDate(legacy)).toEqual(legacy.createdAt)
+
+    const rows = buildGameHistory([legacy], new Map())
+    expect(rows).toHaveLength(1)
+  })
+
+  it('lists drafts alongside completed games, newest first', async () => {
+    await seedPlayers()
+    const draftId = await newGame()
+    const doneId = await newGame()
+    await startGame(doneId)
+    const shifts = await db.shifts.where('gameId').equals(doneId).toArray()
+    for (let i = 0; i < shifts.length; i++) await advanceShift(doneId)
+
+    const games = await db.games.where('teamId').equals(teamId).toArray()
+    const ids = buildGameHistory(games, new Map()).map(r => r.game.id)
+    expect(ids).toHaveLength(2)
+    // The draft is reachable. Nothing else in the app can enumerate it.
+    expect(ids).toContain(draftId)
+    expect(ids).toContain(doneId)
   })
 })
 
