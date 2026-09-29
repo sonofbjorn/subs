@@ -226,9 +226,12 @@ interface TimelineLike {
 /**
  * Which slots of a generated lineup fail to match the template, as slot indices.
  *
- * Depends on the solver's slot ordering, so it must be called on `lineup` exactly as
- * `generateLineups` produced it. Sorting a lineup by name before checking it - which the
- * display layer used to do - silently invalidates the result.
+ * **The lineup must already be resolved to the template** — see
+ * `resolveToTemplate`. Solver output satisfies that by construction, but the
+ * position-blind greedy does not: its array order is a fairness ranking that carries
+ * no positional meaning at all. Reading one as if it did is how a game that fell back
+ * to the greedy at create time ends up showing scrambled positions, ⚠ markers on the
+ * wrong players, and a compliance count that describes nothing.
  *
  * A player with no position never counts as a mismatch: they are flex, and filling any
  * slot is the whole point of leaving a position unset.
@@ -243,6 +246,40 @@ export function slotMismatches(
     const pos = positions.get(id)
     if (pos !== undefined && pos !== template[slot]) out.push(slot)
   })
+  return out
+}
+
+/**
+ * Reorders a lineup into template slot order, so the five on-court players are listed
+ * the way the coach thinks about them: `G, G, G, F, F`.
+ *
+ * A shift's lineup is a *set* of five players; the coach decides which one plays which
+ * slot, so the stored array order is not itself meaningful information. For the solver
+ * it happens to be slot order and this is the identity function. For the greedy it is a
+ * fairness ranking, and this repairs it.
+ *
+ * Exact position matches claim their slot first, so a flex player never displaces
+ * someone who can actually play the spot; a slot with no candidate left takes whoever
+ * remains. That last part is what makes the result a *display* ordering rather than a
+ * plan: it is a greedy pass, not an optimal matching, and it is deliberately not used
+ * to generate lineups (see §4.5.5 for the counterexample greedy slot-filling gets
+ * wrong). Here it only has to produce a faithful, stable presentation.
+ */
+export function resolveToTemplate(
+  lineup: string[],
+  template: LineupTemplate,
+  positions: Map<string, Position | undefined>,
+): string[] {
+  const remaining = [...lineup]
+  const out: string[] = []
+  for (let slot = 0; slot < template.length && remaining.length > 0; slot++) {
+    const want = template[slot]
+    const exact = remaining.findIndex(pid => positions.get(pid) === want)
+    out.push(exact >= 0 ? remaining.splice(exact, 1)[0] : remaining.shift()!)
+  }
+  // A template is always ON_COURT long, but a malformed stored lineup should still
+  // render every player rather than silently dropping them.
+  out.push(...remaining)
   return out
 }
 

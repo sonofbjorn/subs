@@ -557,6 +557,21 @@ naming the mode that can.
 - **Positions are not snapshotted per game.** Lineups are materialized at generation
   time, so editing a player's position later cannot retroactively alter a plan already
   on disk. No historical copy is needed, and none is stored.
+- **The display resolves to the template before it judges.** A shift's lineup is a
+  *set* of five players; which one plays which slot is the coach's call, so the stored
+  array order is not itself information. It happens to be slot order for solver output,
+  but the create-phase greedy fallback (§4.5.4 rule c) stores a fairness ranking that
+  carries no positional meaning at all. `resolveToTemplate` therefore reorders any
+  lineup into template slot order before the UI lists it, and `slotMismatches` runs on
+  the result. This is what makes the ⚠ markers, the "N of M shifts match" count, and
+  `suggestReplacement`'s notion of "the slot being vacated" agree with each other; all
+  three read slot index from the same resolved array. The repair is a greedy pass, not
+  a matching, which is fine: it only has to present a plan faithfully. It is the
+  identity function on solver output, so a template game does not reshuffle its players
+  between renders. **A flex player's chip shows the slot they are filling**, not a dot —
+  a player with no position is playing that spot this shift, so the label is real
+  information; a player with a position mismatch keeps showing their own position, so
+  the chip still disagrees visibly with the slot it is in.
 - **Re-shuffle** keeps its meaning: re-run the same algorithm with a fresh tiebreaker
   order to get a different but equally valid plan. This required the tiebreaker to
   actually reach the solver: `solveShift` originally accepted one and ignored it, which
@@ -807,6 +822,14 @@ Asserting the measured properties of `W = shiftDuration`:
 - The three results differ and are all reachable, which is the point of having three
   modes — but BALANCED's value is *bounding* distortion, not eliminating it, and the
   tests should say so
+
+**Display resolution** (`resolveToTemplate`)
+- Identity on solver output, so a template game never reshuffles its players between renders
+- Repairs a fairness-ordered lineup (§4.5.4 rule c output) into `G,G,F,F,C` grouping with zero mismatches — the regression guard for the scrambled chips, misflagged players, and wrong compliance count that reading a greedy lineup as slot order produced
+- An exact position match claims its slot **before** a flex player takes it, so the repair cannot introduce the mismatch it is there to remove
+- Keeps every player when a slot has no candidate at all (a lockout): length and membership are asserted, not just ordering
+- Deterministic, so the display is stable across renders
+- `slotMismatches` stays order-sensitive. The fix was to resolve first, not to make the checker order-blind; a test asserting a sorted lineup still mismatches is retained deliberately, because it is what forces callers through the resolver
 
 **Call-site integration** (`db/repositories/games.integration.test.ts`, real in-memory Dexie)
 The unit suite proves the *algorithm* honours `phase`; only an integration test can

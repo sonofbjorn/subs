@@ -255,6 +255,20 @@ samples per case rather than trusting a single call.
 matching that benches an entire position — deriving it from "max matching < 5" would
 report the most dangerous case in the feature as fully satisfiable.
 
+**How the lineup is displayed.** A shift's lineup is a *set* of five players; which one
+plays which slot is the coach's call. The stored array happens to be in slot order for
+solver output, but the create-phase greedy fallback stores a fairness ranking that
+carries no positional meaning. So the UI resolves every lineup to the template
+(`resolveToTemplate`) before listing it — grouping the players as the coach reads them,
+`G, G, G, F, F` — and the ⚠ markers, the "N of M shifts match" count, and the slot-aware
+`suggestReplacement` all read slot indices from that same resolved array. The repair is a
+greedy pass, which is fine here (unlike generation, it only has to present a plan
+faithfully), and it is the identity function on solver output so nothing reshuffles
+between renders. A **flex** player's chip shows the slot they are filling rather than a
+placeholder, since a player with no position is playing that spot this shift; a player who
+genuinely mismatches still shows their own position, so the chip visibly disagrees with
+the slot it is in.
+
 **Known limitation.** A **saturated** position group (`k_P = n_P`, e.g. one guard
 against one guard slot) is pinned to 100% of the game by the template itself, and no
 setting of `W` can relieve it. The diagnostics panel says so and names `EQUAL_TIME`

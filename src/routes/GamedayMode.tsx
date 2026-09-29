@@ -5,7 +5,7 @@ import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity, ChevronRight, Cross
 import type { Player, Position, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { advanceShift, uncompleteShift, injurySub } from '../db/repositories/games'
-import { slotMismatches } from '../algorithm/positions'
+import { slotMismatches, resolveToTemplate } from '../algorithm/positions'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 import Dialog from '../components/ui/dialog'
@@ -80,24 +80,36 @@ export default function GamedayMode() {
 
   const template = game.lineupTemplate
   const positions = new Map(allPlayers.map(p => [p.id, p.position as Position | undefined]))
-  // Slot order is preserved here and nowhere else: it is the only ordering under which
-  // a slot-vs-position mismatch means anything. `onCourt` below stays alphabetical for
-  // display, as it always has.
-  const rawLineup: string[] = currentShift ? (JSON.parse(currentShift.lineupJson) as string[]) : []
+  const rawLineup: string[] = currentShift
+    ? (JSON.parse(currentShift.lineupJson) as string[])
+    : []
+
+  // Resolved to the template when there is one. Every `indexOf` in this file then answers
+  // "which slot is this player in" the same way the display lists them, which is what
+  // keeps the mismatch flags, the on-court order, and `suggestReplacement` agreeing. The
+  // stored order alone is not that: a greedy-fallback shift is in fairness order.
+  const slotOrder = template
+    ? resolveToTemplate(rawLineup, template, positions)
+    : rawLineup
 
   // Per-shift mismatch flags for the whole segment, so an injury sub that breaks the
   // template stays visible after it happens. Keyed by shift id because the flag is a
-  // property of the stored lineup, not of which shift happens to be current.
+  // property of that shift's lineup, not of which shift happens to be current.
   const shiftMismatches = new Set<string>()
   if (template) {
     for (const s of segmentShifts) {
-      if (slotMismatches(JSON.parse(s.lineupJson), template, positions).length > 0) {
+      const resolved = resolveToTemplate(JSON.parse(s.lineupJson), template, positions)
+      if (slotMismatches(resolved, template, positions).length > 0) {
         shiftMismatches.add(s.id)
       }
     }
   }
 
-  const onCourt: string[] = currentShift ? [...rawLineup].sort(byName) : []
+  // With a template the five on-court players list in slot order, because that is the
+  // order the coach reads them in. Without one the display stays alphabetical.
+  const onCourt: string[] = currentShift
+    ? template ? slotOrder : [...rawLineup].sort(byName)
+    : []
   const onCourtSet = new Set(onCourt)
   const injuredSet = new Set(game!.injuredPlayerIds ?? [])
   const bench = currentShift
@@ -140,7 +152,7 @@ export default function GamedayMode() {
   function suggestReplacement(): string {
     if (subCandidates.length === 0) return ''
     const playtime = getPlaytimeTotals()
-    const slot = subTarget ? rawLineup.indexOf(subTarget) : -1
+    const slot = subTarget ? slotOrder.indexOf(subTarget) : -1
     const wanted = template && slot >= 0 ? template[slot] : undefined
 
     const rank = (pid: string): number => {
@@ -166,7 +178,7 @@ export default function GamedayMode() {
   // True when the coach's chosen replacement cannot fill the slot being vacated.
   // Computed rather than assumed, so it also covers the flex case (a player with no
   // position always fits, so it never warns).
-  const subSlot = subTarget ? rawLineup.indexOf(subTarget) : -1
+  const subSlot = subTarget ? slotOrder.indexOf(subTarget) : -1
   const wantedPosition = template && subSlot >= 0 ? template[subSlot] : undefined
   const replacementPosition = selectedReplacement ? positions.get(selectedReplacement) : undefined
   const overrideBreaksTemplate =
@@ -319,7 +331,10 @@ export default function GamedayMode() {
                     )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {[...lineup].sort(byName).map(pid => {
+                    {(template
+                      ? resolveToTemplate(lineup, template, positions)
+                      : [...lineup].sort(byName)
+                    ).map((pid, slot) => {
                       const isSub = shiftHasSub && shiftSplits
                         .filter(sp => sp.shiftId === shift.id)
                         .some(sp => sp.playerInId === pid)
@@ -337,7 +352,7 @@ export default function GamedayMode() {
                           {playerMap.get(pid) ?? 'Unknown'}
                           {template && (
                             <span className="font-normal opacity-60">
-                              {positions.get(pid) ?? '·'}
+                              {positions.get(pid) ?? template[slot]}
                             </span>
                           )}
                           {isSub && <span className="text-blue-500">(sub)</span>}
@@ -467,7 +482,7 @@ export default function GamedayMode() {
                   </div>
                   <span className="text-sm font-medium text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
                   {template && (() => {
-                    const slot = rawLineup.indexOf(pid)
+                    const slot = slotOrder.indexOf(pid)
                     return slot >= 0 ? (
                       <span className="text-xs text-slate-400">
                         {template[slot]} slot · {positions.get(pid) ?? 'flex'}

@@ -5,7 +5,7 @@ import { ArrowLeft, Shuffle, Play, Pencil, AlertTriangle, CheckCircle2 } from 'l
 import type { Player, Position, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { startGame, recalculateLineups } from '../db/repositories/games'
-import { slotMismatches } from '../algorithm/positions'
+import { slotMismatches, resolveToTemplate } from '../algorithm/positions'
 import PlaytimeSummary from '../components/PlaytimeSummary'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
@@ -43,7 +43,8 @@ export default function LineupDisplay() {
     if (!t || !shifts) return null
     let matching = 0
     for (const s of shifts) {
-      if (slotMismatches(JSON.parse(s.lineupJson), t, positions).length === 0) matching++
+      const resolved = resolveToTemplate(JSON.parse(s.lineupJson), t, positions)
+      if (slotMismatches(resolved, t, positions).length === 0) matching++
     }
     return { matching, total: shifts.length }
   }, [game?.lineupTemplate, shifts, positions])
@@ -185,11 +186,19 @@ export default function LineupDisplay() {
             <tbody>
               {segmentShifts.map((shift, i) => {
                 const lineup: string[] = JSON.parse(shift.lineupJson)
-                // With a template the lineup is rendered in slot order, because slot
-                // order is the only thing that makes a mismatch meaningful. Without one
-                // the display stays alphabetical, as it has always been.
-                const mismatched = template ? new Set(slotMismatches(lineup, template, positions)) : new Set<number>()
-                const shown = template ? lineup : [...lineup].sort(byName)
+                // With a template the lineup is listed in slot order, because slot order
+                // is the only thing that makes a mismatch meaningful. Without one the
+                // display stays alphabetical, as it has always been.
+                //
+                // Resolve first, then judge: a greedy-fallback shift is stored in fairness
+                // order, so the markers and the chips have to come from the same
+                // arrangement the coach is actually looking at.
+                const shown = template
+                  ? resolveToTemplate(lineup, template, positions)
+                  : [...lineup].sort(byName)
+                const mismatched = template
+                  ? new Set(slotMismatches(shown, template, positions))
+                  : new Set<number>()
                 return (
                   <tr key={shift.id} className="border-b border-slate-100 last:border-0">
                     <td className="px-4 py-3 font-medium text-slate-700">{i + 1}</td>
@@ -198,7 +207,15 @@ export default function LineupDisplay() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1.5">
-                        {shown.map((pid, idx) => (
+                        {shown.map((pid, idx) => {
+                          const own = positions.get(pid)
+                          // A flex player has no position of their own, so the honest
+                          // label is the slot they are filling this shift - which is
+                          // real information, unlike the dot it replaces. A player whose
+                          // own position is set always shows it, so a mismatch stays
+                          // visible in the chip rather than only in the tooltip.
+                          const label = own ?? template![idx]
+                          return (
                           <span
                             key={pid}
                             className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
@@ -215,12 +232,11 @@ export default function LineupDisplay() {
                             {mismatched.has(idx) && <AlertTriangle className="h-3 w-3" />}
                             {playerMap.get(pid) ?? 'Unknown'}
                             {template && (
-                              <span className="font-normal opacity-70">
-                                {positions.get(pid) ?? '·'}
-                              </span>
+                              <span className="font-normal opacity-70">{label}</span>
                             )}
                           </span>
-                        ))}
+                          )
+                        })}
                       </div>
                     </td>
                   </tr>

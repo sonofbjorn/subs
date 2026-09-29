@@ -6,6 +6,7 @@ import {
   solveShift,
   applyShiftToTimeline,
   slotMismatches,
+  resolveToTemplate,
   BIG_M,
   type PositionConfig,
 } from './positions'
@@ -708,11 +709,64 @@ describe('slotMismatches', () => {
 
   it('is order-sensitive, so sorting a lineup before checking invalidates it', () => {
     // The display layer used to sort by name. This is the regression guard for that:
-    // the same five players, correct in slot order and mismatched once sorted.
+    // the same five players, correct in slot order and mismatched once sorted. The fix
+    // was to resolve to the template first, not to make this function order-blind.
     const positions = posMap({ g1: 'G', g2: 'G', f1: 'F', f2: 'F', c1: 'C' })
     const lineup = ['g1', 'g2', 'f1', 'f2', 'c1']
     expect(slotMismatches(lineup, GGFFC, positions)).toEqual([])
     expect(slotMismatches([...lineup].sort(), GGFFC, positions)).not.toEqual([])
+  })
+})
+
+describe('resolveToTemplate', () => {
+  it('is the identity on solver output, which is already in slot order', () => {
+    // The common case has to be free of reordering, or every shift would reshuffle its
+    // players visually even though the plan never changed.
+    const positions = posMap({ g1: 'G', g2: 'G', f1: 'F', f2: 'F', c1: 'C' })
+    const lineup = ['g1', 'g2', 'f1', 'f2', 'c1']
+    expect(resolveToTemplate(lineup, GGFFC, positions)).toEqual(lineup)
+  })
+
+  it('repairs a fairness-ordered lineup so the same five players read as G,G,F,F,C', () => {
+    // Exactly what the create-phase greedy fallback stores. Read raw, the chips would
+    // show C,G,F,F,G and three players would be flagged as mismatched.
+    const positions = posMap({ g1: 'G', g2: 'G', f1: 'F', f2: 'F', c1: 'C' })
+    const scrambled = ['g2', 'f1', 'f2', 'g1', 'c1']
+    const resolved = resolveToTemplate(scrambled, GGFFC, positions)
+    // Which guard lands in which G slot is immaterial - they are the same position, so
+    // the stability of the pass is free to pick either. What matters is the grouping.
+    expect(resolved.slice(2)).toEqual(['f1', 'f2', 'c1'])
+    expect(new Set(resolved.slice(0, 2))).toEqual(new Set(['g1', 'g2']))
+    expect(slotMismatches(resolved, GGFFC, positions)).toEqual([])
+  })
+
+  it('gives an exact match the slot before a flex player takes it', () => {
+    // Resolution must never let an unpositioned player displace someone who can
+    // actually play the spot, or the repair would introduce the mismatch it removes.
+    const positions = posMap({ g1: 'G', x: undefined, f1: 'F', f2: 'F', c1: 'C' })
+    const resolved = resolveToTemplate(['x', 'g1', 'f1', 'f2', 'c1'], GGFFC, positions)
+    expect(resolved[0]).toBe('g1')
+    expect(resolved[1]).toBe('x')
+    // The flex player is in a G slot, so it is not a mismatch - the flex rule holds.
+    expect(slotMismatches(resolved, GGFFC, positions)).toEqual([])
+  })
+
+  it('keeps every player, even when no candidate matches a slot', () => {
+    // A lockout: nobody is a center, so the C slot has no candidate and takes whoever is
+    // left. The point is that a repair pass never drops a player from the display.
+    const positions = posMap({ g1: 'G', g2: 'G', f1: 'F', f2: 'F', f3: 'F' })
+    const lineup = ['f3', 'f2', 'f1', 'g2', 'g1']
+    const resolved = resolveToTemplate(lineup, GGFFC, positions)
+    expect(resolved).toHaveLength(5)
+    expect(new Set(resolved)).toEqual(new Set(lineup))
+    // Forwards fill both F slots, so the only unavoidable mismatch is the empty C slot.
+    expect(slotMismatches(resolved, GGFFC, positions)).toEqual([4])
+  })
+
+  it('is deterministic, so the display does not reshuffle between renders', () => {
+    const positions = posMap({ g1: 'G', g2: 'G', f1: 'F', f2: 'F', c1: 'C' })
+    const lineup = ['f1', 'c1', 'g2', 'g1', 'f2']
+    expect(resolveToTemplate(lineup, GGFFC, positions)).toEqual(resolveToTemplate(lineup, GGFFC, positions))
   })
 })
 
