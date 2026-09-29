@@ -3,7 +3,8 @@
  * (in-memory) Dexie database. Regression cover for the bugs catalogued in the
  * README's "Known gaps" section.
  */
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { Position } from '../../types'
 import { db } from '../schema'
 import { createGame, startGame, advanceShift, injurySub, updateActiveRoster } from './games'
 
@@ -146,6 +147,167 @@ describe('updateActiveRoster on a draft game (integration)', () => {
       for (const pid of JSON.parse(s.lineupJson) as string[]) {
         expect(active.has(pid)).toBe(true)
       }
+    }
+  })
+})
+
+describe('lineup template plumbing (integration)', () => {
+  beforeEach(reset)
+
+  /** 2G / 3F / 2C — the canonical roster for every position test. */
+  const POSITIONED: Array<[string, 'G' | 'F' | 'C']> = [
+    ['g1', 'G'], ['g2', 'G'],
+    ['f1', 'F'], ['f2', 'F'], ['f3', 'F'],
+    ['c1', 'C'], ['c2', 'C'],
+  ]
+  const ids = POSITIONED.map(([id]) => id)
+
+  async function seedPlayers() {
+    for (const [id, position] of POSITIONED) {
+      await db.players.add({ id, teamId, name: id, isArchived: false, position })
+    }
+  }
+
+  function mismatches(lineupJson: string, template: Position[]): number[] {
+    const lineup: string[] = JSON.parse(lineupJson)
+    const byId = new Map(POSITIONED)
+    const out: number[] = []
+    lineup.forEach((pid, slot) => {
+      const pos = byId.get(pid)
+      if (pos !== undefined && pos !== template[slot]) out.push(slot)
+    })
+    return out
+  }
+
+  it('snapshots the template and priority onto the game', async () => {
+    await seedPlayers()
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: ids,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+      lineupTemplate: ['G', 'G', 'F', 'F', 'C'], lineupPriority: 'TEMPLATE',
+    })
+    const game = await db.games.get(gameId)
+    expect(game!.lineupTemplate).toEqual(['G', 'G', 'F', 'F', 'C'])
+    expect(game!.lineupPriority).toBe('TEMPLATE')
+  })
+
+  it('leaves both fields absent when the coach chose no template', async () => {
+    // The "No template" preset is a real off switch, and `buildPositionConfig` returns
+    // `undefined` for it so the position-blind path runs with no position lookup at
+    // all. A stray `lineupPriority` with no template would be harmless but misleading.
+    await seedPlayers()
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: ids,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+    })
+    const game = await db.games.get(gameId)
+    expect(game!.lineupTemplate).toBeUndefined()
+    expect(game!.lineupPriority).toBeUndefined()
+  })
+
+  it('honors the template on every shift of a TEMPLATE-priority game', async () => {
+    await seedPlayers()
+    const template: Position[] = ['G', 'G', 'F', 'F', 'C']
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: ids,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+      lineupTemplate: template, lineupPriority: 'TEMPLATE',
+    })
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    expect(shifts.length).toBeGreaterThan(0)
+    for (const s of shifts) {
+      expect(mismatches(s.lineupJson, template), `shift at ${s.startMinute}min`).toEqual([])
+    }
+  })
+
+  it('keeps the template as a soft constraint after a mid-game injury breaks it', async () => {
+    // Rule (c) applies only at create. Mid-game, dropping both centers must NOT revert
+    // to the position-blind plan for every remaining shift - the coach's break is
+    // committed, and what should be left is a position-aware plan with one unmatchable
+    // slot rather than a plan that ignores positions altogether.
+    //
+    // `Math.random` is pinned because the fallback path runs the greedy, whose slot
+    // order comes from a shuffled tiebreaker. Left random, the fallback would satisfy
+    // this assertion by luck roughly half the time, which would make the test
+    // meaningless in both directions.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    await seedPlayers()
+    const template: Position[] = ['G', 'G', 'F', 'F', 'C']
+    const broken = ids.filter(id => id !== 'c1' && id !== 'c2')
+
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: ids,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+      lineupTemplate: template, lineupPriority: 'BALANCED',
+    })
+    await startGame(gameId)
+    await advanceShift(gameId)
+    await updateActiveRoster(gameId, broken)
+
+    const future = (await db.shifts.where('gameId').equals(gameId).sortBy('startMinute'))
+      .filter(s => s.status === 'PENDING')
+    expect(future.length).toBeGreaterThan(0)
+    // 2G/3F/0C against a template wanting 2G/2F/1C: the center slot is now impossible,
+    // but the four satisfiable slots must still be honored. Asserting on the *slots*
+    // rather than on a mismatch count is what makes this discriminate - a plain count
+    // of one unavoidable mismatch is true of the fallback plan too.
+    for (const s of future) {
+      const lineup: string[] = JSON.parse(s.lineupJson)
+      const pos = (pid: string) => new Map(POSITIONED).get(pid)
+      expect(pos(lineup[0]), `slot 0 of shift at ${s.startMinute}min`).toBe('G')
+      expect(pos(lineup[1]), `slot 1 of shift at ${s.startMinute}min`).toBe('G')
+    }
+    vi.restoreAllMocks()
+  })
+
+  it('does fall back to the position-blind plan for the same break at create time', async () => {
+    // The contrast that proves the previous test is measuring `phase` and not luck:
+    // identical roster, template, priority, and pinned shuffle - only the phase differs,
+    // and the slot order comes out structurally different.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    await seedPlayers()
+    const template: Position[] = ['G', 'G', 'F', 'F', 'C']
+    const broken = ids.filter(id => id !== 'c1' && id !== 'c2')
+
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: broken,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+      lineupTemplate: template, lineupPriority: 'BALANCED',
+    })
+    const shifts = await db.shifts.where('gameId').equals(gameId).sortBy('startMinute')
+    // The greedy's slot order carries no positional meaning, so it rotates names
+    // through the slots - including a forward sitting in the first guard slot. This is
+    // what a silent mid-game fallback would produce.
+    const aligned = shifts.filter(s => {
+      const l: string[] = JSON.parse(s.lineupJson)
+      const pos = (pid: string) => new Map(POSITIONED).get(pid)
+      return pos(l[0]) === 'G' && pos(l[1]) === 'G'
+    })
+    expect(aligned.length, 'create-phase fallback produced position-aligned slots').toBe(0)
+    vi.restoreAllMocks()
+  })
+
+  it('re-reads positions live, so fixing a mislabeled player changes the next plan', async () => {
+    // The template is frozen on the game, but positions are not snapshotted. Correcting
+    // a mislabeled center to a guard must show up in the regenerated plan.
+    await seedPlayers()
+    const template: Position[] = ['G', 'G', 'F', 'F', 'C']
+    const gameId = await createGame({
+      teamId, name: 'g', activePlayerIds: ids,
+      structure: 'QUARTERS', durationMinutes: 20, substitutionIntervalMinutes: 5,
+      lineupTemplate: template, lineupPriority: 'TEMPLATE',
+    })
+    // c1 was mislabeled; it is really a forward.
+    await db.players.update('c1', { position: 'F' })
+    await updateActiveRoster(gameId, ids) // forces a regeneration through the new path
+
+    const shifts = await db.shifts.where('gameId').equals(gameId).toArray()
+    const byId = new Map<string, string>(POSITIONED)
+    byId.set('c1', 'F')
+    for (const s of shifts) {
+      const lineup: string[] = JSON.parse(s.lineupJson)
+      const gSlots = lineup.slice(0, 2).every(pid => byId.get(pid) === 'G')
+      expect(gSlots, `shift at ${s.startMinute}min did not use the corrected position`).toBe(true)
     }
   })
 })

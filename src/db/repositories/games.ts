@@ -1,7 +1,9 @@
 import { db } from '../schema'
-import type { GameStructure, Game, Shift } from '../../types'
+import type { GameStructure, Game, Shift, LineupTemplate, LineupPriority } from '../../types'
 import { generateLineups, computeTimelineState } from '../../algorithm/lineup'
 import { shiftPlaytime, splitMinuteFor } from '../../algorithm/playtime'
+import { getPositionMap } from './players'
+import type { PositionConfig } from '../../algorithm/positions'
 
 interface CreateGameInput {
   teamId: string
@@ -11,6 +13,36 @@ interface CreateGameInput {
   durationMinutes: number
   substitutionIntervalMinutes: number
   maxConsecutiveShifts?: number
+  /** Snapshotted onto the game. Absent means "no template" — position-blind forever. */
+  lineupTemplate?: LineupTemplate
+  lineupPriority?: LineupPriority
+}
+
+/**
+ * Builds the solver config for one generation pass, or `undefined` when the game has
+ * no template.
+ *
+ * Returning `undefined` (rather than a config with `template: undefined`) is what
+ * guarantees the no-template case is byte-identical to the pre-feature algorithm:
+ * `generateLineups` then takes the position-blind branch with no position lookup at
+ * all, so an unpositioned legacy roster cannot be affected by this feature.
+ *
+ * Positions are read live from the `Player` rows on every mid-game regeneration, so
+ * fixing a mislabeled player immediately affects the next plan, while the template
+ * itself stays frozen on the game as the coach set it at creation.
+ */
+async function buildPositionConfig(
+  game: Pick<Game, 'lineupTemplate' | 'lineupPriority'>,
+  playerIds: string[],
+  phase: 'create' | 'midgame',
+): Promise<PositionConfig | undefined> {
+  if (!game.lineupTemplate) return undefined
+  return {
+    positions: await getPositionMap(playerIds),
+    template: game.lineupTemplate,
+    priority: game.lineupPriority ?? 'BALANCED',
+    phase,
+  }
 }
 
 export async function createGame(input: CreateGameInput): Promise<string> {
@@ -29,6 +61,8 @@ export async function createGame(input: CreateGameInput): Promise<string> {
     maxConsecutiveShifts: input.maxConsecutiveShifts ?? 2,
     status: 'DRAFT',
     createdAt: now,
+    lineupTemplate: input.lineupTemplate,
+    lineupPriority: input.lineupPriority,
   }
 
   await db.games.add(game)
@@ -55,6 +89,12 @@ export async function createGame(input: CreateGameInput): Promise<string> {
     input.substitutionIntervalMinutes,
     undefined,
     input.maxConsecutiveShifts ?? 2,
+    undefined,
+    // `phase: 'create'` is the only place rule (c) applies: an unsatisfiable template
+    // falls back to the position-blind plan instead of paying a mismatch penalty on
+    // every shift for a template that can never be honored. Warned about in the UI, but
+    // never allowed to block game creation.
+    await buildPositionConfig(game, input.activePlayerIds, 'create'),
   )
 
   const allShifts: Shift[] = []
@@ -102,6 +142,8 @@ export async function recalculateLineups(gameId: string): Promise<void> {
     game.substitutionIntervalMinutes,
     undefined,
     game.maxConsecutiveShifts ?? 2,
+    undefined,
+    await buildPositionConfig(game, activePlayerIds, 'midgame'),
   )
 
   const allShifts: Shift[] = []
@@ -351,6 +393,11 @@ export async function injurySub(
     existingPlaytime,
     game.maxConsecutiveShifts ?? 2,
     existingState,
+    // Mid-game, so rule (c) does *not* apply: an injury that makes the template
+    // unsatisfiable is a committed, coach-owned break. Keeping the template as a soft
+    // constraint and flagging the mismatch (§6.6) is better than silently reverting to
+    // position-blind for every remaining shift.
+    await buildPositionConfig(game, newActive, 'midgame'),
   )
 
   for (const shiftRes of lineupResults[0]?.shifts ?? []) {
@@ -464,6 +511,7 @@ export async function updateActiveRoster(
     existingPlaytime,
     game.maxConsecutiveShifts ?? 2,
     existingState,
+    await buildPositionConfig(game, newActivePlayerIds, 'midgame'),
   )
 
   for (const shiftRes of lineupResults[0]?.shifts ?? []) {

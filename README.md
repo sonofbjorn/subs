@@ -181,6 +181,88 @@ configurable guarantee.)
 held to within roughly one substitution interval, which is the best achievable
 when `activePlayers % 5 != 0`.
 
+### Positions and lineup templates
+
+A player may have a position (`G`, `F`, `C`) or none. **No position means flex** —
+eligible for any template slot, not unplayable. That is the default, so an existing
+roster with no positions set keeps working exactly as before.
+
+A game may carry a **lineup template**: five slot labels, one per player on court
+(`[G,G,F,F,C]`, `[G,G,G,F,F]`, or anything else). It is picked in Game Setup,
+snapshotted onto the `Game` at creation, and can pre-fill from the team's default.
+A game with **no template** runs the greedy above, unchanged.
+
+When a template is set, the greedy cannot be reused. Ranking five players is a
+*sorting* problem; filling five labelled slots is an *assignment* problem, and greedy
+slot-filling gets it wrong — it will take the two flex players for the guard slots,
+starve the forwards, and produce a broken lineup when a zero-mismatch matching exists.
+`src/algorithm/positions.ts` therefore solves it as **min-cost bipartite matching**
+(Hungarian/JV) between the active players and the five slots.
+
+**Cost of putting player `p` in slot `s`:**
+
+| Term | Value |
+|---|---|
+| Playtime | `p.totalPlaytime` |
+| Played last shift | `+ REST_PENALTY` = `maxPlaytime − minPlaytime + shiftDuration` |
+| At the consecutive limit | `+ CONSEC_PENALTY` = `shiftDuration` |
+| Position ≠ slot label | `+ W` |
+
+`W` is the only thing that varies between modes, which is why three priorities need
+just one constant:
+
+- **`EQUAL_TIME`** — no solver. The template is ignored entirely; playtime wins.
+- **`BALANCED`** — `W = shiftDuration`. The template holds unless breaking it costs
+  less than one shift of fairness. Over the 192-case calibration matrix this recovers
+  ~87% of the fairness gap while honoring the template on 93% of shifts where the
+  template costs nothing.
+- **`TEMPLATE`** — `W = Infinity` (mismatch edges deleted). Hard constraint;
+  fairness and the consecutive limit yield to it.
+
+**Three rules decide which path runs** (`shouldUseSolver`): the greedy runs when
+(a) there is no template, (b) the priority is `EQUAL_TIME`, or (c) the priority is
+`BALANCED` *and* the template cannot be satisfied by the active roster **at game
+creation**. Rule (c) is create-time only, and `PositionConfig.phase` is required
+rather than optional precisely so a call site cannot silently inherit the wrong
+answer. Mid-game, an injury that makes the template unsatisfiable keeps the template
+as a soft constraint and flags the shift — the coach on the sideline outranks the
+plan, and silently reverting to position-blind for every remaining shift would be
+worse than a visible, overridable break.
+
+**Two implementation details are load-bearing** and both pass a casual smoke test:
+
+- Rows must be **slots**, columns players — exactly `K` augmentations. Iterating
+  players as rows attempts `N − K` extra augmentations and reports spurious
+  infeasibility.
+- Forbidden edges must be a **finite sentinel** (`BIG_M = 1e9`), not `Infinity`. The
+  potential invariant requires finite reduced costs; infeasibility is detected
+  afterwards by checking whether the optimum consumed a forbidden edge.
+
+Both are covered by a differential test against a brute-force optimum over random
+cost matrices in `src/algorithm/positions.test.ts`.
+
+**A template game is not deterministic, and that is deliberate.** `generateLineups`
+builds a shuffled tiebreaker whenever every player starts level (a fresh game, or a
+regeneration) and the solver consumes it as an epsilon, so Re-shuffle returns a
+different — equally valid — plan instead of a byte-identical one. `EQUAL_TIME` and
+`TEMPLATE` are unaffected: the greedy uses no tiebreaker, and `TEMPLATE` has no ties
+left to break. The practical consequence is that BALANCED's fairness spread is a
+*distribution*, not a number, so the calibration suite measures it over several
+samples per case rather than trusting a single call.
+
+**Unsatisfiability is arithmetic, not solver output.** `templateDiagnostics` checks
+`n_P + flex >= k_P` per position, because a lockout (`k_P = 0`) is a *feasible*
+matching that benches an entire position — deriving it from "max matching < 5" would
+report the most dangerous case in the feature as fully satisfiable.
+
+**Known limitation.** A **saturated** position group (`k_P = n_P`, e.g. one guard
+against one guard slot) is pinned to 100% of the game by the template itself, and no
+setting of `W` can relieve it. The diagnostics panel says so and names `EQUAL_TIME`
+as the only mode that changes the outcome, rather than offering Balanced as a fix
+that provably does nothing. No condition here blocks game creation — the plan is
+generated as close to the template as the roster allows, and each shift that cannot
+match is marked with a ⚠.
+
 ### Mid-game recalculation
 
 Both `injurySub` and `updateActiveRoster` recalculate the rest of the game the

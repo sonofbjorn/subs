@@ -2,13 +2,16 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { Plus, ChevronDown, ChevronRight, ArrowLeft, Archive, RotateCcw, Pencil, Play } from 'lucide-react'
-import type { Player } from '../types'
+import type { LineupPriority, LineupTemplate, Player, Position } from '../types'
 import { db } from '../db/schema'
 import { addPlayer, updatePlayer, archivePlayer, unarchivePlayer, isDuplicateName } from '../db/repositories/players'
+import { setTeamLineupDefaults } from '../db/repositories/teams'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 import Dialog from '../components/ui/dialog'
 import Input from '../components/ui/input'
+import { LineupTemplateEditor, PositionChip, PositionPicker } from '../components/positions'
+import { PRIORITY_LABELS } from '../lib/positions'
 
 export default function RosterList() {
   const { teamId } = useParams()
@@ -21,9 +24,10 @@ export default function RosterList() {
   }, [teamId])
 
   const [showAdd, setShowAdd] = useState(false)
-  const [editTarget, setEditTarget] = useState<{ id: string; name: string; number?: number } | null>(null)
+  const [editTarget, setEditTarget] = useState<{ id: string; name: string; number?: number; position?: Position } | null>(null)
   const [formName, setFormName] = useState('')
   const [formNumber, setFormNumber] = useState('')
+  const [formPosition, setFormPosition] = useState<Position | undefined>(undefined)
   const [error, setError] = useState('')
   const [showArchived, setShowArchived] = useState(false)
 
@@ -31,9 +35,17 @@ export default function RosterList() {
   const activePlayers = sorted.filter(p => !p.isArchived)
   const archivedPlayers = sorted.filter(p => p.isArchived)
 
+  // Surfaced inline on the roster so a coach can see at a glance which positions are
+  // unstaffed. A template cannot be satisfied by a position nobody plays, and that is
+  // much easier to fix here than to debug in Game Setup.
+  const unstaffed = (['G', 'F', 'C'] as const).filter(
+    p => !activePlayers.some(pl => pl.position === p),
+  )
+
   function resetForm() {
     setFormName('')
     setFormNumber('')
+    setFormPosition(undefined)
     setError('')
   }
 
@@ -42,9 +54,10 @@ export default function RosterList() {
     setShowAdd(true)
   }
 
-  function openEdit(player: { id: string; name: string; number?: number }) {
+  function openEdit(player: { id: string; name: string; number?: number; position?: Position }) {
     setFormName(player.name)
     setFormNumber(player.number?.toString() ?? '')
+    setFormPosition(player.position)
     setError('')
     setEditTarget(player)
   }
@@ -66,15 +79,23 @@ export default function RosterList() {
     if (editTarget) {
       const dup = await isDuplicateName(teamId, name, editTarget.id)
       if (dup) { setError('A player with this name already exists'); return }
-      await updatePlayer(editTarget.id, { name, number })
+      await updatePlayer(editTarget.id, { name, number, position: formPosition })
       setEditTarget(null)
     } else {
       const dup = await isDuplicateName(teamId, name)
       if (dup) { setError('A player with this name already exists'); return }
-      await addPlayer(teamId, name, number)
+      await addPlayer(teamId, name, number, formPosition)
       setShowAdd(false)
     }
     resetForm()
+  }
+
+  async function saveTeamDefault(
+    template: LineupTemplate | undefined,
+    priority: LineupPriority,
+  ) {
+    if (!teamId) return
+    await setTeamLineupDefaults(teamId, template, priority)
   }
 
   if (team === undefined || allPlayers === undefined) {
@@ -136,6 +157,7 @@ export default function RosterList() {
                   </span>
                 )}
                 <span className="text-sm font-medium text-slate-900">{player.name}</span>
+                <PositionChip position={player.position} />
               </div>
               <div className="flex items-center gap-1">
                 <button
@@ -158,6 +180,13 @@ export default function RosterList() {
         </div>
       )}
 
+      {unstaffed.length > 0 && (
+        <p className="mt-4 text-xs text-slate-500">
+          No {unstaffed.join(' or ')} on this roster. A template that needs those slots
+          can&apos;t be filled — players with no position can cover any slot instead.
+        </p>
+      )}
+
       {archivedPlayers.length > 0 && (
         <section className="mt-8">
           <button
@@ -178,6 +207,7 @@ export default function RosterList() {
                       </span>
                     )}
                     <span className="text-sm text-slate-500 line-through">{player.name}</span>
+                    <PositionChip position={player.position} className="opacity-70" />
                   </div>
                   <button
                     onClick={async () => { await unarchivePlayer(player.id) }}
@@ -225,9 +255,52 @@ export default function RosterList() {
             onChange={e => { setFormNumber(e.target.value); setError('') }}
             onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
           />
+          <PositionPicker value={formPosition} onChange={setFormPosition} />
           {error && <p className="text-sm text-red-500">{error}</p>}
         </div>
       </Dialog>
+
+      {activePlayers.length > 0 && (
+        <section className="mt-10 border-t border-slate-200 pt-6">
+          <h2 className="text-sm font-semibold text-slate-900">Default lineup template</h2>
+          <p className="mb-3 mt-1 text-xs text-slate-500">
+            Pre-fills every new game for this team. Each game keeps its own settings once
+            created, so changing this never rewrites a game that already exists.
+          </p>
+
+          <LineupTemplateEditor
+            value={team.defaultLineupTemplate}
+            onChange={next => saveTeamDefault(next, team.defaultLineupPriority ?? 'BALANCED')}
+          />
+
+          <div className="mt-4">
+            <span className="mb-1.5 block text-sm font-medium text-slate-700">Priority</span>
+            <div className="flex flex-col gap-1.5" role="group" aria-label="Lineup priority">
+              {(Object.keys(PRIORITY_LABELS) as LineupPriority[]).map(key => {
+                const active = (team.defaultLineupPriority ?? 'BALANCED') === key
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => saveTeamDefault(team.defaultLineupTemplate, key)}
+                    aria-pressed={active}
+                    className={
+                      active
+                        ? 'rounded-md bg-slate-700 px-3 py-2 text-left text-sm font-medium text-white'
+                        : 'rounded-md bg-white px-3 py-2 text-left text-sm text-slate-600 ring-1 ring-inset ring-slate-300 hover:bg-slate-50'
+                    }
+                  >
+                    <span className="block font-medium">{PRIORITY_LABELS[key].label}</span>
+                    <span className={active ? 'block text-xs text-slate-300' : 'block text-xs text-slate-500'}>
+                      {PRIORITY_LABELS[key].help}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

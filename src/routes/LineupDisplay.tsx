@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft, Shuffle, Play, Pencil } from 'lucide-react'
-import type { Player, Shift, Segment } from '../types'
+import { ArrowLeft, Shuffle, Play, Pencil, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import type { Player, Position, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { startGame, recalculateLineups } from '../db/repositories/games'
+import { slotMismatches } from '../algorithm/positions'
 import PlaytimeSummary from '../components/PlaytimeSummary'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
@@ -29,6 +30,23 @@ export default function LineupDisplay() {
   }, [teamId])
 
   const [selectedSegment, setSelectedSegment] = useState(0)
+
+  const positions = useMemo(
+    () => new Map((allPlayers ?? []).map(p => [p.id, p.position as Position | undefined])),
+    [allPlayers],
+  )
+
+  // Compliance across the whole game, not just the visible segment. Null when the game
+  // has no template, which is the only case where the number is meaningless.
+  const compliance = useMemo(() => {
+    const t = game?.lineupTemplate
+    if (!t || !shifts) return null
+    let matching = 0
+    for (const s of shifts) {
+      if (slotMismatches(JSON.parse(s.lineupJson), t, positions).length === 0) matching++
+    }
+    return { matching, total: shifts.length }
+  }, [game?.lineupTemplate, shifts, positions])
 
   if (game === undefined || team === undefined || segments === undefined || shifts === undefined || allPlayers === undefined) {
     return (
@@ -80,6 +98,7 @@ export default function LineupDisplay() {
   }
 
   const totalMinutes = segments.length * game.durationMinutes
+  const template = game.lineupTemplate
 
   async function handleStartGame() {
     if (!gameId || !teamId) return
@@ -112,6 +131,25 @@ export default function LineupDisplay() {
           </span>
         </p>
       </header>
+
+      {compliance && (
+        <p className={`mb-4 flex items-center gap-1.5 text-sm ${
+          compliance.matching === compliance.total ? 'text-emerald-700' : 'text-amber-700'
+        }`}>
+          {compliance.matching === compliance.total ? (
+            <>
+              <CheckCircle2 className="h-4 w-4" />
+              All {compliance.total} shifts match the template {template!.join(' ')}
+            </>
+          ) : (
+            <>
+              <AlertTriangle className="h-4 w-4" />
+              {compliance.matching} of {compliance.total} shifts match the template{' '}
+              {template!.join(' ')}
+            </>
+          )}
+        </p>
+      )}
 
       <div className="mb-6 flex gap-2 overflow-x-auto">
         {segments.map((seg, i) => (
@@ -147,6 +185,11 @@ export default function LineupDisplay() {
             <tbody>
               {segmentShifts.map((shift, i) => {
                 const lineup: string[] = JSON.parse(shift.lineupJson)
+                // With a template the lineup is rendered in slot order, because slot
+                // order is the only thing that makes a mismatch meaningful. Without one
+                // the display stays alphabetical, as it has always been.
+                const mismatched = template ? new Set(slotMismatches(lineup, template, positions)) : new Set<number>()
+                const shown = template ? lineup : [...lineup].sort(byName)
                 return (
                   <tr key={shift.id} className="border-b border-slate-100 last:border-0">
                     <td className="px-4 py-3 font-medium text-slate-700">{i + 1}</td>
@@ -155,12 +198,27 @@ export default function LineupDisplay() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1.5">
-                        {[...lineup].sort(byName).map(pid => (
+                        {shown.map((pid, idx) => (
                           <span
                             key={pid}
-                            className="inline-flex items-center rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-medium text-orange-700"
+                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              mismatched.has(idx)
+                                ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-300'
+                                : 'bg-orange-100 text-orange-700'
+                            }`}
+                            title={
+                              mismatched.has(idx)
+                                ? `In the ${template![idx]} slot, but ${positions.get(pid) ?? 'no position'} — template not matched for this shift`
+                                : undefined
+                            }
                           >
+                            {mismatched.has(idx) && <AlertTriangle className="h-3 w-3" />}
                             {playerMap.get(pid) ?? 'Unknown'}
+                            {template && (
+                              <span className="font-normal opacity-70">
+                                {positions.get(pid) ?? '·'}
+                              </span>
+                            )}
                           </span>
                         ))}
                       </div>

@@ -1,4 +1,5 @@
 import { db } from '../schema'
+import type { LineupTemplate, LineupPriority } from '../../types'
 
 export async function createTeam(name: string): Promise<string> {
   const id = crypto.randomUUID()
@@ -8,6 +9,24 @@ export async function createTeam(name: string): Promise<string> {
 
 export async function renameTeam(id: string, name: string): Promise<void> {
   await db.teams.update(id, { name })
+}
+
+/**
+ * Pre-fills Game Setup. A game's own values always win once chosen.
+ *
+ * Passing `undefined` for the template is a real clear, not a no-op: Dexie's `update`
+ * assigns every key present in the changeset, so an explicit `undefined` writes
+ * `undefined` and the "No template" preset really does remove a team default.
+ */
+export async function setTeamLineupDefaults(
+  id: string,
+  defaultLineupTemplate?: LineupTemplate,
+  defaultLineupPriority?: LineupPriority,
+): Promise<void> {
+  await db.teams.update(id, {
+    defaultLineupTemplate,
+    defaultLineupPriority,
+  })
 }
 
 export async function deleteTeam(id: string): Promise<void> {

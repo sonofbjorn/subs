@@ -1,3 +1,6 @@
+import { shouldUseSolver, solveShift, applyShiftToTimeline, BIG_M } from './positions'
+import type { PositionConfig } from './positions'
+
 interface PlayerTimeline {
   playerId: string
   totalPlaytime: number
@@ -103,6 +106,7 @@ export function generateLineups(
   existingPlaytime?: Map<string, number>,
   maxConsecutiveShifts: number = 2,
   existingTimelineState?: Map<string, { consecutivePlayed: number; lastShiftPlayed: boolean }>,
+  positionConfig?: PositionConfig,
 ): LineupResult[] {
   const timeline = new Map<string, PlayerTimeline>()
 
@@ -125,6 +129,29 @@ export function generateLineups(
     ? new Map(shuffle(activePlayerIds).map((id, i) => [id, i]))
     : undefined
 
+  // Path selection happens once for the whole game (design.md §4.5.4 rules a-c).
+  // With no template, or under EQUAL_TIME, or when BALANCED meets an unsatisfiable
+  // template at create time, the position-blind greedy below runs unchanged — which is
+  // what keeps the 15 pre-existing tests green and legacy games behaving exactly as
+  // they did.
+  const template = positionConfig?.template
+  const priority = positionConfig?.priority ?? 'BALANCED'
+  const useSolver =
+    positionConfig !== undefined &&
+    shouldUseSolver(
+      activePlayerIds,
+      positionConfig.positions,
+      template,
+      priority,
+      positionConfig.phase,
+    )
+
+  // W collapses the modes into one constant. BALANCED prices a mismatch at one
+  // shift's worth; TEMPLATE makes it forbidden. W = shiftDuration, not the coach's
+  // substitution interval, so position behavior cannot change with an unrelated
+  // setting (design.md §4.5.4).
+  const mismatchPenalty = useSolver ? (priority === 'TEMPLATE' ? BIG_M : intervalMinutes) : 0
+
   const results: LineupResult[] = []
 
   for (let seg = 0; seg < segmentCount; seg++) {
@@ -134,7 +161,20 @@ export function generateLineups(
     while (minute < segmentDurationMinutes) {
       const shiftDuration = Math.min(intervalMinutes, segmentDurationMinutes - minute)
 
-      const lineup = pickLineup(timeline, activePlayerIds, shiftDuration, maxConsecutiveShifts, tiebreaker)
+      const lineup = useSolver
+        ? solveShift(
+            activePlayerIds,
+            timeline,
+            template!,
+            positionConfig!.positions,
+            shiftDuration,
+            maxConsecutiveShifts,
+            mismatchPenalty,
+            tiebreaker,
+          )
+        : pickLineup(timeline, activePlayerIds, shiftDuration, maxConsecutiveShifts, tiebreaker)
+
+      if (useSolver) applyShiftToTimeline(timeline, lineup, shiftDuration)
 
       shiftsInSegment.push({ lineup, shiftDuration })
       minute += shiftDuration

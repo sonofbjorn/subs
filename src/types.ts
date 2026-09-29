@@ -1,7 +1,24 @@
+/** A single court position. A player has at most one, or none (see `Player.position`). */
+export type Position = 'G' | 'F' | 'C'
+
+/**
+ * How strongly a game's lineup template is enforced.
+ * - BALANCED: honor the template unless doing so costs more than one shift of fairness
+ * - EQUAL_TIME: ignore the template entirely; play purely clock-based
+ * - TEMPLATE: hard constraint; fairness and the consecutive limit yield to it
+ */
+export type LineupPriority = 'BALANCED' | 'EQUAL_TIME' | 'TEMPLATE'
+
+/** A lineup template is always exactly 5 entries — one per player on court. */
+export type LineupTemplate = Position[]
+
 export interface Team {
   id: string
   name: string
   createdAt: Date
+  /** Pre-fills Game Setup only; a game's own values win once chosen. */
+  defaultLineupTemplate?: LineupTemplate
+  defaultLineupPriority?: LineupPriority
 }
 
 export interface Player {
@@ -10,6 +27,11 @@ export interface Player {
   name: string
   number?: number
   isArchived: boolean
+  /**
+   * Absent means **flex** — eligible for any template slot, not "unplayable".
+   * Legacy rows have no `position` and must be treated as flex.
+   */
+  position?: Position
 }
 
 export type GameStructure = 'HALVES' | 'QUARTERS'
@@ -27,6 +49,14 @@ export interface Game {
   maxConsecutiveShifts: number
   status: GameStatus
   createdAt: Date
+  /**
+   * Snapshotted at game creation. Absent means "no template" and the
+   * position-blind algorithm runs regardless of priority. Legacy rows have no
+   * `lineupTemplate`.
+   */
+  lineupTemplate?: LineupTemplate
+  /** Absent defaults to BALANCED, but a template is what actually engages the solver. */
+  lineupPriority?: LineupPriority
 }
 
 export type SegmentStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED'

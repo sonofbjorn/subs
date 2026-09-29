@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity, ChevronRight, Cross, Ambulance } from 'lucide-react'
-import type { Player, Shift, Segment } from '../types'
+import { ArrowLeft, CheckCircle, RotateCcw, Users, Activity, ChevronRight, Cross, Ambulance, AlertTriangle } from 'lucide-react'
+import type { Player, Position, Shift, Segment } from '../types'
 import { db } from '../db/schema'
 import { advanceShift, uncompleteShift, injurySub } from '../db/repositories/games'
+import { slotMismatches } from '../algorithm/positions'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
 import Dialog from '../components/ui/dialog'
+import { PositionChip } from '../components/positions'
 
 export default function GamedayMode() {
   const { teamId, gameId } = useParams()
@@ -76,7 +78,26 @@ export default function GamedayMode() {
 
   const byName = (a: string, b: string) => (playerMap.get(a) ?? '').localeCompare(playerMap.get(b) ?? '')
 
-  const onCourt: string[] = currentShift ? (JSON.parse(currentShift.lineupJson) as string[]).sort(byName) : []
+  const template = game.lineupTemplate
+  const positions = new Map(allPlayers.map(p => [p.id, p.position as Position | undefined]))
+  // Slot order is preserved here and nowhere else: it is the only ordering under which
+  // a slot-vs-position mismatch means anything. `onCourt` below stays alphabetical for
+  // display, as it always has.
+  const rawLineup: string[] = currentShift ? (JSON.parse(currentShift.lineupJson) as string[]) : []
+
+  // Per-shift mismatch flags for the whole segment, so an injury sub that breaks the
+  // template stays visible after it happens. Keyed by shift id because the flag is a
+  // property of the stored lineup, not of which shift happens to be current.
+  const shiftMismatches = new Set<string>()
+  if (template) {
+    for (const s of segmentShifts) {
+      if (slotMismatches(JSON.parse(s.lineupJson), template, positions).length > 0) {
+        shiftMismatches.add(s.id)
+      }
+    }
+  }
+
+  const onCourt: string[] = currentShift ? [...rawLineup].sort(byName) : []
   const onCourtSet = new Set(onCourt)
   const injuredSet = new Set(game!.injuredPlayerIds ?? [])
   const bench = currentShift
@@ -107,19 +128,50 @@ export default function GamedayMode() {
     return pt
   }
 
+  /**
+   * Best replacement for the player currently being subbed out.
+   *
+   * With a template active, filling the vacated slot beats fairness: an exact position
+   * match first, then a flex player (no position — can play anything), then anything,
+   * with playing time breaking ties within each tier. A mid-game sub is a coach-owned
+   * break, so this only *suggests*; overriding it is always allowed and marks the
+   * shift.
+   */
   function suggestReplacement(): string {
+    if (subCandidates.length === 0) return ''
     const playtime = getPlaytimeTotals()
-    let lowest = subCandidates[0]
-    let lowestTime = Infinity
+    const slot = subTarget ? rawLineup.indexOf(subTarget) : -1
+    const wanted = template && slot >= 0 ? template[slot] : undefined
+
+    const rank = (pid: string): number => {
+      if (!wanted) return 0
+      const pos = positions.get(pid)
+      if (pos === wanted) return 0
+      if (pos === undefined) return 1
+      return 2
+    }
+
+    let best = subCandidates[0]
+    let bestKey: [number, number] = [rank(best), playtime.get(best) ?? 0]
     for (const pid of subCandidates) {
-      const t = playtime.get(pid) ?? 0
-      if (t < lowestTime) {
-        lowestTime = t
-        lowest = pid
+      const key: [number, number] = [rank(pid), playtime.get(pid) ?? 0]
+      if (key[0] < bestKey[0] || (key[0] === bestKey[0] && key[1] < bestKey[1])) {
+        best = pid
+        bestKey = key
       }
     }
-    return lowest
+    return best
   }
+
+  // True when the coach's chosen replacement cannot fill the slot being vacated.
+  // Computed rather than assumed, so it also covers the flex case (a player with no
+  // position always fits, so it never warns).
+  const subSlot = subTarget ? rawLineup.indexOf(subTarget) : -1
+  const wantedPosition = template && subSlot >= 0 ? template[subSlot] : undefined
+  const replacementPosition = selectedReplacement ? positions.get(selectedReplacement) : undefined
+  const overrideBreaksTemplate =
+    wantedPosition !== undefined && replacementPosition !== undefined && replacementPosition !== wantedPosition
+  const wantedSlotLabel = wantedPosition === 'G' ? 'guard' : wantedPosition === 'F' ? 'forward' : 'center'
 
   function openSubModal() {
     setSubTarget(null)
@@ -127,8 +179,7 @@ export default function GamedayMode() {
     setShowSubModal(true)
   }
 
-  async function handleSubConfirm() {
-    if (!subTarget || !selectedReplacement || !currentShift || !gameId) return
+  async function handleSubConfirm() {    if (!subTarget || !selectedReplacement || !currentShift || !gameId) return
     await injurySub(gameId, currentShift.id, subTarget, selectedReplacement)
     setShowSubModal(false)
     setSubTarget(null)
@@ -257,6 +308,15 @@ export default function GamedayMode() {
                     </p>
                     {isCompleted && <CheckCircle className="h-3.5 w-3.5 text-slate-400" />}
                     {isCurrent && <ChevronRight className="h-3.5 w-3.5 text-green-600" />}
+                    {template && shiftMismatches.has(shift.id) && (
+                      <span
+                        className="inline-flex items-center gap-1 text-xs font-medium text-amber-600"
+                        title="This shift could not match the lineup template"
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        template
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {[...lineup].sort(byName).map(pid => {
@@ -275,6 +335,11 @@ export default function GamedayMode() {
                           }`}
                         >
                           {playerMap.get(pid) ?? 'Unknown'}
+                          {template && (
+                            <span className="font-normal opacity-60">
+                              {positions.get(pid) ?? '·'}
+                            </span>
+                          )}
                           {isSub && <span className="text-blue-500">(sub)</span>}
                         </span>
                       )
@@ -401,6 +466,14 @@ export default function GamedayMode() {
                     {playerNumberMap.get(pid)?.toString() ?? '?'}
                   </div>
                   <span className="text-sm font-medium text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
+                  {template && (() => {
+                    const slot = rawLineup.indexOf(pid)
+                    return slot >= 0 ? (
+                      <span className="text-xs text-slate-400">
+                        {template[slot]} slot · {positions.get(pid) ?? 'flex'}
+                      </span>
+                    ) : null
+                  })()}
                   {subInIds.has(pid) && (
                     <span className="ml-auto inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
                       Sub
@@ -432,6 +505,7 @@ export default function GamedayMode() {
                       {playerNumberMap.get(pid)?.toString() ?? '?'}
                     </div>
                     <span className="text-sm text-slate-900">{playerMap.get(pid) ?? 'Unknown'}</span>
+                    <PositionChip position={positions.get(pid)} />
                     {pid === suggestReplacement() && (
                       <span className="ml-auto text-xs text-orange-500">Suggested</span>
                     )}
@@ -444,6 +518,18 @@ export default function GamedayMode() {
           {subTarget && selectedReplacement && (
             <p className="text-sm text-slate-500">
               Shift time will be split 50/50 ({splitMinutes} min each).
+            </p>
+          )}
+
+          {overrideBreaksTemplate && (
+            <p className="flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                {playerMap.get(selectedReplacement ?? '') ?? 'This player'} isn&apos;t a{' '}
+                {wantedSlotLabel}, so this shift will be marked as a template mismatch.
+                That&apos;s a deliberate break, not a problem — the coach on the sideline
+                outranks the plan.
+              </span>
             </p>
           )}
         </div>

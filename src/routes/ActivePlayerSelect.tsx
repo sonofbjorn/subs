@@ -1,12 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
-import type { Player, GameStructure, Game } from '../types'
+import type {
+  LineupPriority,
+  LineupTemplate,
+  Player,
+  GameStructure,
+  Game,
+  Position,
+} from '../types'
 import { db } from '../db/schema'
 import { createGame, updateActiveRoster } from '../db/repositories/games'
 import Button from '../components/ui/button'
 import Card from '../components/ui/card'
+import { PositionChip } from '../components/positions'
+import TemplateDiagnosticsPanel from '../components/TemplateDiagnostics'
 
 interface SetupLocationState {
   gameName: string
@@ -14,6 +23,8 @@ interface SetupLocationState {
   duration: number
   interval: number
   maxConsecutive: number
+  template?: LineupTemplate
+  priority?: LineupPriority
 }
 
 interface EditLocationState {
@@ -44,6 +55,10 @@ export default function ActivePlayerSelect() {
 
   const [selectedIds, setSelectedIds] = useState<Set<string> | null>(null)
   const [showArchived, setShowArchived] = useState(false)
+  // The remedy buttons in the diagnostics panel write back into the create-time
+  // config, so the one-tap fix actually changes what gets generated rather than
+  // silently editing a local field nothing reads.
+  const [priorityOverride, setPriorityOverride] = useState<LineupPriority | null>(null)
 
   useEffect(() => {
     if (selectedIds !== null) return
@@ -53,6 +68,15 @@ export default function ActivePlayerSelect() {
       setSelectedIds(new Set())
     }
   }, [selectedIds, isEdit, existingGame, state])
+
+  const selectedPlayers = useMemo(
+    () => (allPlayers ?? []).filter(p => selectedIds?.has(p.id)),
+    [allPlayers, selectedIds],
+  )
+  const positionMap = useMemo(
+    () => new Map(selectedPlayers.map(p => [p.id, p.position as Position | undefined])),
+    [selectedPlayers],
+  )
 
   if (!state) {
     return (
@@ -121,6 +145,8 @@ export default function ActivePlayerSelect() {
       durationMinutes: config.duration,
       substitutionIntervalMinutes: config.interval,
       maxConsecutiveShifts: config.maxConsecutive,
+      lineupTemplate: config.template,
+      lineupPriority: priorityOverride ?? config.priority,
     })
     navigate(`/teams/${teamId}/lineup/${newGameId}`)
   }
@@ -149,6 +175,15 @@ export default function ActivePlayerSelect() {
   const title = isEdit ? 'Edit Gameday Roster' : 'Active Players'
   const subtitle = isEdit ? `${team.name}` : `${team.name} · ${config.gameName ?? ''}`
 
+  // In edit mode the template is already snapshotted on the game and read-only here:
+  // mid-game, rule (c) is deliberately not in force, so a selection change that makes
+  // the template unsatisfiable is a coach-owned break to be flagged, not silently
+  // discarded. Only the create screen offers remedies.
+  const template = isEdit ? existingGame?.lineupTemplate : config.template
+  const priority = isEdit
+    ? (existingGame?.lineupPriority ?? 'BALANCED')
+    : (priorityOverride ?? config.priority ?? 'BALANCED')
+
   return (
     <div className="mx-auto max-w-2xl px-4 py-8">
       <header className="mb-8">
@@ -159,6 +194,18 @@ export default function ActivePlayerSelect() {
         <h1 className="text-2xl font-bold text-slate-900">{title}</h1>
         <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
       </header>
+
+      {template && (
+        <Card className="mb-6">
+          <TemplateDiagnosticsPanel
+            activePlayerIds={Array.from(ids)}
+            positions={positionMap}
+            template={template}
+            priority={priority}
+            onPriorityChange={isEdit ? undefined : setPriorityOverride}
+          />
+        </Card>
+      )}
 
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-slate-600">
@@ -199,6 +246,7 @@ export default function ActivePlayerSelect() {
                 }`}>
                   {player.name}
                 </span>
+                <PositionChip position={player.position} />
               </div>
               <div className={`h-5 w-5 rounded border-2 ${
                 ids.has(player.id)
@@ -236,6 +284,7 @@ export default function ActivePlayerSelect() {
                       </span>
                     )}
                     <span className="text-sm text-slate-500 line-through">{player.name}</span>
+                    <PositionChip position={player.position} className="opacity-70" />
                   </div>
                   <Button
                     variant="ghost"

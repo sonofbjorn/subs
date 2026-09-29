@@ -30,6 +30,13 @@ export class SubsDB extends Dexie {
       shiftSplits: '&id, shiftId, minute, playerOutId, playerInId',
       plannedPlaytimes: '&id, gameId, playerId, plannedMinutes',
     })
+    // `Player.position`, `Game.lineupTemplate`/`lineupPriority` and
+    // `Team.defaultLineupTemplate`/`defaultLineupPriority` are deliberately NOT indexed,
+    // so they need no version block and no migration. Dexie returns the whole stored
+    // object on read, so existing rows simply surface these as `undefined` — which
+    // every consumer must treat as a real case (absent template => position-blind
+    // algorithm; absent priority => BALANCED). A bump is only needed if one of these
+    // ever becomes indexed, e.g. a "find me the centers" query.
   }
 }
 
